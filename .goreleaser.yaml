@@ -24,16 +24,21 @@ checksum:
 # Publishes Formula/brewboard.rb into this repository (it doubles as the tap).
 # GITHUB_TOKEN with contents: write (see release.yml) can push to it, so no
 # extra secret is needed. skip_upload is false so rc tags publish too.
+# Published as a formula (not a cask) on purpose: formula downloads are not
+# quarantined by macOS, so an unsigned binary runs without any Gatekeeper
+# workaround. GoReleaser marks `brews` deprecated; revisit once the binary is
+# signed and notarized.
 brews:
   - name: brewboard
     repository:
-      owner: KaanEmec
-      name: brew-board
-      branch: main
+      owner: kaanemec
+      name: homebrew-tap
+      token: "{{ .Env.HOMEBREW_TAP_TOKEN }}"
     directory: Formula
     commit_author:
-      name: Brew Board bot
-      email: brewboard-bot@users.noreply.github.com
+      name: goreleaserbot
+      email: bot@goreleaser.com
+    commit_msg_template: "brewboard {{ .Tag }}"
     homepage: https://github.com/KaanEmec/brew-board
     description: Keyboard-first terminal interface for routine Homebrew maintenance
     skip_upload: false

@@ -12,7 +12,7 @@ All notable changes to this project are documented here. The format follows [Kee
 - Colour theme with light and dark variants that degrades to 256, 16 or no colours (honours `NO_COLOR`); state is always also shown as text.
 - `c` (continue) on the list opens the review; on the receipt `c` reviews `brew cleanup`.
 - Every `brew` call now also sets `HOMEBREW_NO_AUTOREMOVE=1`, `HOMEBREW_NO_INSTALL_CLEANUP=1`, `HOMEBREW_NO_ENV_HINTS=1`, `HOMEBREW_NO_COLOR=1` and `HOMEBREW_NO_EMOJI=1` (alongside `HOMEBREW_NO_AUTO_UPDATE=1`).
-- Homebrew tap: GoReleaser publishes `Formula/brewboard.rb` into this repository on each `v*` tag, including prereleases. Install with `brew tap kaanemec/brew-board https://github.com/KaanEmec/brew-board && brew trust kaanemec/brew-board && brew install brewboard`.
+- Homebrew tap: GoReleaser publishes `Formula/brewboard.rb` into `kaanemec/homebrew-tap` on each `v*` tag, including prereleases. Install with `brew install kaanemec/tap/brewboard`.
 
 ### Changed
 
