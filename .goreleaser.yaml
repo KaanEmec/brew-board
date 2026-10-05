@@ -1,0 +1,27 @@
+version: 2
+
+project_name: brewboard
+
+# macOS only: Linuxbrew is not supported.
+builds:
+  - id: brewboard
+    main: ./cmd/brewboard
+    binary: brewboard
+    env:
+      - CGO_ENABLED=0
+    goos: [darwin]
+    goarch: [arm64, amd64]
+    ldflags:
+      - -s -w -X main.version={{.Version}}
+
+archives:
+  - formats: [tar.gz]
+    name_template: "{{ .ProjectName }}_{{ .Version }}_{{ .Os }}_{{ .Arch }}"
+
+checksum:
+  name_template: checksums.txt
+
+changelog:
+  sort: asc
+  filters:
+    exclude: ["^docs", "^test", "^ci", "^chore", "^style"]
