@@ -268,7 +268,9 @@ func (m model) startExecution() (tea.Model, tea.Cmd) {
 		close(done)
 		return nil
 	}
-	return m, tea.Batch(execute, waitForEvent(events))
+	// The spinner ticks only while this run is on screen; see the
+	// spinner.TickMsg case in update.
+	return m, tea.Batch(execute, waitForEvent(events), m.spin.Tick)
 }
 
 // waitForEvent blocks until the next execution event. The model re-issues it

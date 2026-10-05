@@ -10,6 +10,7 @@ import (
 	"github.com/charmbracelet/x/ansi"
 
 	"github.com/kaanemec/brew-board/internal/brew"
+	"github.com/kaanemec/brew-board/internal/receipt"
 	"github.com/kaanemec/brew-board/internal/run"
 )
 
@@ -24,16 +25,8 @@ const (
 	tightWidth   = 50 // below this the check column becomes a "*" marker
 )
 
-// Styles degrade through lipgloss: with NO_COLOR or a dumb terminal they render
-// as plain text, so every state also carries a textual marker.
-var (
-	titleStyle    = lipgloss.NewStyle().Bold(true)
-	dimStyle      = lipgloss.NewStyle().Faint(true)
-	selectedStyle = lipgloss.NewStyle().Reverse(true)
-	outdatedStyle = lipgloss.NewStyle().Foreground(lipgloss.AdaptiveColor{Light: "#B45309", Dark: "#FBBF24"})
-	errorStyle    = lipgloss.NewStyle().Foreground(lipgloss.AdaptiveColor{Light: "#B91C1C", Dark: "#F87171"})
-	staleStyle    = lipgloss.NewStyle().Foreground(lipgloss.AdaptiveColor{Light: "#1D4ED8", Dark: "#93C5FD"})
-)
+// maxPanelWidth caps bordered panels so prose stays readable on wide terminals.
+const maxPanelWidth = 100
 
 // View renders the current screen. Every line is truncated to the terminal
 // width by cell width, so wide runes and long output never wrap.
@@ -90,28 +83,58 @@ func (m model) pinnedLines() []string {
 	if m.mode != viewReceipt || m.isHelpVisible {
 		return nil
 	}
+	t := currentTheme()
 	switch {
 	case m.sess.saveErr != nil:
-		return m.wrapLines(errorStyle.Render("[error] Could not save the receipt: "+m.sess.saveErr.Error()+" · s retry"), "")
+		return t.bad.paintAll(m.wrapLines("[error] Could not save the receipt: "+m.sess.saveErr.Error()+" · s retry", ""))
 	case m.sess.savedPath != "":
-		return m.wrapLines(staleStyle.Render("Saved to "+m.sess.savedPath), "")
+		return t.ok.paintAll(m.wrapLines("Saved to "+m.sess.savedPath, ""))
 	}
 	return nil
 }
 
+// headerLine is the title bar: the name, a chip saying what the session may
+// do, the Homebrew version, and, when there is room, inventory totals on the
+// right.
 func (m model) headerLine() string {
-	label := " · read-only"
+	t := currentTheme()
+	label, chip := "read-only", t.chipDim
 	switch m.mode {
 	case viewRunning:
-		label = " · running Homebrew"
+		label, chip = "running Homebrew", t.chipAccent
 	case viewReceipt:
-		label = " · session receipt"
+		label, chip = "session receipt", t.chipInfo
 	}
-	h := titleStyle.Render("Brew Board") + dimStyle.Render(label)
+	left := []part{{"Brew Board", t.title}, {" ", ink{}}, {" " + label + " ", chip}}
 	if m.hasInv && m.inv.BrewVersion != "" {
-		h += dimStyle.Render(" · " + m.inv.BrewVersion)
+		left = append(left, part{"  Homebrew " + m.inv.BrewVersion, t.dim})
 	}
-	return h
+	var right []part
+	if m.hasInv && (m.mode == viewList || m.mode == viewDetails) && !m.isHelpVisible {
+		c := m.counts
+		if c.outdated > 0 {
+			right = append(right, part{outdatedMark, t.accent}, part{fmt.Sprint(c.outdated), t.accentBold}, part{" outdated · ", t.dim})
+		}
+		right = append(right, part{fmt.Sprint(c.formulae + c.casks), t.text}, part{" packages", t.dim})
+	}
+	lw, rw := partsWidth(left), partsWidth(right)
+	if len(right) > 0 && lw+2+rw <= m.width {
+		left = append(left, part{strings.Repeat(" ", m.width-lw-rw), ink{}})
+		left = append(left, right...)
+	}
+	var b strings.Builder
+	for _, p := range left {
+		b.WriteString(p.k.paint(p.text))
+	}
+	return b.String()
+}
+
+func partsWidth(parts []part) int {
+	w := 0
+	for _, p := range parts {
+		w += ansi.StringWidth(p.text)
+	}
+	return w
 }
 
 // bannerLine is the one-line notice shown above a list that is not fresh.
@@ -119,13 +142,14 @@ func (m model) bannerLine() (string, bool) {
 	if !m.hasInv {
 		return "", false
 	}
+	t := currentTheme()
 	at := m.loadedAt.Format(timeLayout)
 	switch {
 	case m.isLoading:
-		return staleStyle.Render("[stale, refreshing…] showing inventory loaded at " + at), true
+		return t.warnBold.paint("[stale, refreshing…]") + t.warn.paint(" showing inventory loaded at "+at), true
 	case m.err != nil:
 		title, _ := describeError(m.err)
-		return errorStyle.Render("[error] Refresh failed: " + title + ". Showing inventory loaded at " + at + " · r retry"), true
+		return t.badBold.paint("[error]") + t.bad.paint(" Refresh failed: "+title+". Showing inventory loaded at "+at+" · r retry"), true
 	}
 	return "", false
 }
@@ -147,9 +171,10 @@ func (m model) listHeight() int {
 }
 
 func (m model) listLines() []string {
+	t := currentTheme()
 	if !m.hasInv {
 		if m.isLoading {
-			return []string{"", "Loading Homebrew inventory…", "", dimStyle.Render("Running brew info and brew outdated (read-only).")}
+			return []string{"", t.accentBold.paint("Loading Homebrew inventory…"), "", t.dim.paint("Running brew info and brew outdated (read-only).")}
 		}
 		return m.errorLines()
 	}
@@ -166,45 +191,46 @@ func (m model) listLines() []string {
 		return append(lines,
 			"",
 			"Homebrew is working, but no formulae or casks are installed.",
-			dimStyle.Render("Install something with brew, then press r to refresh."),
+			t.dim.paint("Install something with brew, then press r to refresh."),
 		)
 	}
 
 	cols := m.columns()
-	lines = append(lines, dimStyle.Render(cols.header()))
+	lines = append(lines, cols.header(t))
 	if len(m.visible) == 0 {
 		return append(lines,
 			"",
 			"No packages match "+m.filterSummary()+".",
-			dimStyle.Render("esc clears the search · f changes type · o toggles outdated-only"),
+			t.dim.paint("esc clears the search · f changes type · o toggles outdated-only"),
 		)
 	}
 	end := min(m.offset+m.listHeight(), len(m.visible))
 	for i := m.offset; i < end; i++ {
 		p := m.visible[i]
-		lines = append(lines, cols.row(p, i == m.cursor, m.selected[keyOf(p)]))
+		lines = append(lines, cols.row(t, p, i == m.cursor, m.selected[keyOf(p)]))
 	}
 	return lines
 }
 
 func (m model) errorLines() []string {
+	t := currentTheme()
 	title, detail := describeError(m.err)
-	wrap := lipgloss.NewStyle().Width(max(m.width-2, 20))
-	lines := []string{"", errorStyle.Bold(true).Render("[error] " + title), ""}
-	lines = append(lines, strings.Split(wrap.Render(detail), "\n")...)
-	return append(lines, "", dimStyle.Render("r retry · q quit"))
+	lines := []string{"", t.badBold.paint("[error] " + title), ""}
+	lines = append(lines, wrapTo(detail, m.width-2, "")...)
+	return append(lines, "", t.hint("r retry · q quit", nil))
 }
 
 // columns describes the list layout for the current width. Description and
 // kind columns are dropped as the terminal narrows.
 type columns struct {
+	width               int
 	name, version, desc int
 	hasKind, hasCheck   bool
 }
 
 func (m model) columns() columns {
 	w := m.width
-	c := columns{hasKind: w >= 72, hasCheck: w >= tightWidth}
+	c := columns{width: w, hasKind: w >= 72, hasCheck: w >= tightWidth}
 
 	maxName, maxVersion := max(len("NAME"), m.nameWidth), max(len("VERSION"), m.versionWidth)
 
@@ -237,77 +263,135 @@ func (m model) columns() columns {
 	return c
 }
 
-func (c columns) header() string {
+// rowWidth is the cell width of every row and of the column header.
+func (c columns) rowWidth() int {
+	w := len(cursorMarker) + 2 + c.name + 1 + c.version + 1 + pinWidth
+	if c.hasCheck {
+		w += checkWidth
+	}
+	if c.hasKind {
+		w += kindWidth + 1
+	}
+	if c.desc > 0 {
+		w += 1 + c.desc
+	}
+	return w
+}
+
+// header renders the column labels, underlined; the gaps stay plain.
+func (c columns) header(t *theme) string {
 	var b strings.Builder
+	col := func(label string, w int) {
+		s := fit(label, w)
+		l := strings.TrimRight(s, " ")
+		b.WriteString(t.colHdr.paint(l) + s[len(l):])
+	}
 	b.WriteString(strings.Repeat(" ", len(cursorMarker)+2))
 	if c.hasCheck {
 		b.WriteString(strings.Repeat(" ", checkWidth))
 	}
-	b.WriteString(fit("NAME", c.name) + " ")
+	col("NAME", c.name)
+	b.WriteString(" ")
 	if c.hasKind {
-		b.WriteString(fit("KIND", kindWidth) + " ")
+		col("KIND", kindWidth)
+		b.WriteString(" ")
 	}
-	b.WriteString(fit("VERSION", c.version) + " " + fit("PIN", pinWidth))
+	col("VERSION", c.version)
+	b.WriteString(" ")
+	col("PIN", pinWidth)
 	if c.desc > 0 {
-		b.WriteString(" " + fit("DESCRIPTION", c.desc))
+		b.WriteString(" ")
+		col("DESCRIPTION", c.desc)
 	}
 	return b.String()
 }
 
-// row renders one package. isCursor marks the highlighted row; isStaged marks
-// a package selected for the maintenance session.
-func (c columns) row(p brew.Package, isCursor, isStaged bool) string {
-	var b strings.Builder
+// row renders one package. isCursor marks the highlighted row, which is
+// painted on the selection background across the full width; isStaged marks
+// a package selected for the maintenance session. The text is the same with
+// or without colour.
+func (c columns) row(t *theme, p brew.Package, isCursor, isStaged bool) string {
+	inks := &t.row[0]
 	if isCursor {
-		b.WriteString(cursorMarker)
-	} else {
-		b.WriteString(strings.Repeat(" ", len(cursorMarker)))
+		inks = &t.row[1]
 	}
-	marker := "  "
-	if p.Outdated {
-		marker = outdatedMark
-		if !isCursor {
-			marker = outdatedStyle.Render(marker)
-		}
+	var b strings.Builder
+	b.Grow(c.width + 128)
+	put := func(r rowRole, s string) {
+		k := inks[r]
+		b.WriteString(k.on)
+		b.WriteString(s)
+		b.WriteString(k.off)
 	}
-	if isStaged && !c.hasCheck {
-		marker = "* "
+
+	lead := strings.Repeat(" ", len(cursorMarker))
+	if isCursor {
+		lead = cursorMarker
 	}
-	b.WriteString(marker)
+	switch {
+	case isStaged && !c.hasCheck:
+		put(rolePlain, lead)
+		put(roleChecked, "* ")
+	case p.Outdated:
+		put(rolePlain, lead)
+		put(roleMark, outdatedMark)
+	default:
+		put(rolePlain, lead+"  ")
+	}
 	if c.hasCheck {
 		// Boxes only on rows that can be (or are) staged, to keep the list calm.
 		switch {
 		case isStaged:
-			b.WriteString("[x] ")
+			put(roleChecked, "[x]")
+			put(rolePlain, " ")
 		case unstageableReason(p) == "":
-			b.WriteString("[ ] ")
+			put(roleBox, "[ ]")
+			put(rolePlain, " ")
 		default:
-			b.WriteString(strings.Repeat(" ", checkWidth))
+			put(rolePlain, strings.Repeat(" ", checkWidth))
 		}
 	}
-	b.WriteString(fit(p.Name, c.name) + " ")
+	put(roleName, fit(p.Name, c.name))
+	put(rolePlain, " ")
 	if c.hasKind {
-		b.WriteString(fit(string(p.Kind), kindWidth) + " ")
+		role := roleFormula
+		if p.Kind == brew.KindCask {
+			role = roleCask
+		}
+		put(role, fit(string(p.Kind), kindWidth))
+		put(rolePlain, " ")
 	}
-	pin := ""
+	v := fit(versionText(p), c.version)
+	if i := strings.Index(v, versionArrow); p.Outdated && i >= 0 {
+		put(rolePlain, v[:i])
+		put(roleMark, versionArrow)
+		put(roleAvailable, v[i+len(versionArrow):])
+	} else {
+		put(rolePlain, v)
+	}
+	put(rolePlain, " ")
 	if p.Pinned {
-		pin = "pin"
+		put(rolePin, "pin")
+	} else {
+		put(rolePlain, strings.Repeat(" ", pinWidth))
 	}
-	b.WriteString(fit(versionText(p), c.version) + " " + fit(pin, pinWidth))
 	if c.desc > 0 {
-		b.WriteString(" " + fit(p.Description, c.desc))
+		put(rolePlain, " ")
+		put(roleDesc, fit(p.Description, c.desc))
 	}
-	if isCursor {
-		return selectedStyle.Render(b.String())
+	if pad := c.width - c.rowWidth(); isCursor && pad > 0 {
+		put(rolePlain, strings.Repeat(" ", pad))
 	}
 	return b.String()
 }
+
+const versionArrow = " → "
 
 // versionText is "installed" or "installed → available" when outdated.
 func versionText(p brew.Package) string {
 	installed := orMissing(latestInstalled(p))
 	if p.Outdated && p.AvailableVersion != "" {
-		return installed + " → " + p.AvailableVersion
+		return installed + versionArrow + p.AvailableVersion
 	}
 	return installed
 }
@@ -320,9 +404,11 @@ func latestInstalled(p brew.Package) string {
 }
 
 func (m model) detailLines() []string {
+	t := currentTheme()
 	p := m.detail
 	const labelWidth = 14
-	valueWidth := max(m.width-labelWidth-1, 10)
+	pw := min(m.width, maxPanelWidth)
+	valueWidth := max(panelInner(pw)-labelWidth-1, 10)
 	wrap := lipgloss.NewStyle().Width(valueWidth)
 
 	var lines []string
@@ -330,32 +416,52 @@ func (m model) detailLines() []string {
 		lines = append(lines, b) // first, so a short terminal never hides it
 	}
 	lines = append(lines, "")
-	field := func(label, value string) {
-		for i, l := range strings.Split(wrap.Render(orMissing(value)), "\n") {
+	var body []string
+	field := func(label, value string, k ink) {
+		if strings.TrimSpace(value) == "" {
+			value, k = missing, t.dim
+		}
+		for i, l := range strings.Split(wrap.Render(value), "\n") {
 			if i > 0 {
 				label = ""
 			}
-			lines = append(lines, dimStyle.Render(fit(label, labelWidth))+" "+l)
+			body = append(body, t.dim.paint(fit(label, labelWidth))+" "+k.paint(strings.TrimRight(l, " ")))
 		}
 	}
-
-	autoUpdates := missing // only meaningful for casks
-	if p.Kind == brew.KindCask {
-		autoUpdates = yesNo(p.AutoUpdates)
+	flag := func(label string, b bool, yes ink) {
+		if b {
+			field(label, "yes", yes)
+			return
+		}
+		field(label, "no", t.dim)
 	}
-	field("Name", titleStyle.Render(p.Name))
-	field("Display name", p.DisplayName)
-	field("Kind", string(p.Kind))
-	field("Tap", p.Tap)
-	field("Installed", strings.Join(p.InstalledVersions, ", "))
-	field("Available", p.AvailableVersion)
-	field("Outdated", markedYesNo(p.Outdated, outdatedMark))
-	field("Pinned", yesNo(p.Pinned))
-	field("Deprecated", yesNo(p.Deprecated))
-	field("Disabled", yesNo(p.Disabled))
-	field("Auto-updates", autoUpdates)
-	field("Description", p.Description)
-	field("Homepage", p.Homepage)
+
+	kind := t.formula
+	if p.Kind == brew.KindCask {
+		kind = t.cask
+	}
+	field("Name", p.Name, t.bold)
+	field("Display name", p.DisplayName, ink{})
+	field("Kind", string(p.Kind), kind)
+	field("Tap", p.Tap, ink{})
+	field("Installed", strings.Join(p.InstalledVersions, ", "), ink{})
+	field("Available", p.AvailableVersion, ink{})
+	if p.Outdated {
+		field("Outdated", markedYesNo(true, outdatedMark), t.accentBold)
+	} else {
+		field("Outdated", markedYesNo(false, outdatedMark), t.dim)
+	}
+	flag("Pinned", p.Pinned, t.pin)
+	flag("Deprecated", p.Deprecated, t.warn)
+	flag("Disabled", p.Disabled, t.bad)
+	if p.Kind == brew.KindCask { // only meaningful for casks
+		flag("Auto-updates", p.AutoUpdates, t.ok)
+	} else {
+		field("Auto-updates", missing, t.dim)
+	}
+	field("Description", p.Description, ink{})
+	field("Homepage", p.Homepage, t.cask)
+	lines = append(lines, t.panel(t.title.paint("Package details"), body, pw, false)...)
 
 	source := "Source: brew info/outdated --json=v2, loaded at " + m.loadedAt.Format(timeLayout)
 	if m.inv.BrewPath != "" {
@@ -364,81 +470,117 @@ func (m model) detailLines() []string {
 	note := "Values are Homebrew's metadata at load time; " + missing + " means Homebrew did not report it."
 	para := lipgloss.NewStyle().Width(max(m.width, 20))
 	lines = append(lines, "")
-	lines = append(lines, strings.Split(para.Render(dimStyle.Render(source)), "\n")...)
-	lines = append(lines, strings.Split(para.Render(dimStyle.Render(note)), "\n")...)
+	lines = append(lines, t.dim.paintAll(strings.Split(para.Render(source), "\n"))...)
+	lines = append(lines, t.dim.paintAll(strings.Split(para.Render(note), "\n"))...)
 	return lines
 }
 
-// helpLines renders keyHelp. At 100×24 it fits without scrolling; narrower
-// terminals wrap the descriptions (or, below 30 cells for them, put each one
-// under its keys), and the overlay scrolls.
+// helpLines renders keyHelp in a centred panel. At 100×24 it fits without
+// scrolling (the panel then leaves its bottom edge off); narrower terminals
+// wrap the descriptions (or, below 30 cells for them, put each one under its
+// keys), and the overlay scrolls.
 func (m model) helpLines() []string {
-	labelWidth := 0
+	t := currentTheme()
+	labelWidth, descWidth := 0, 0
 	for _, k := range keyHelp {
 		labelWidth = max(labelWidth, ansi.StringWidth(k.label))
+		descWidth = max(descWidth, ansi.StringWidth(k.desc))
 	}
+	pw := min(m.width, 2+labelWidth+1+descWidth+4)
+	inner := panelInner(pw)
 	indent := 2 + labelWidth + 1
-	if m.width-indent < 30 {
+	if inner-indent < 30 {
 		indent = 6 // stacked
 	}
-	wrap := lipgloss.NewStyle().Width(max(m.width-indent, 20))
-	lines := []string{titleStyle.Render("Keys")}
+	var body []string
 	for _, k := range keyHelp {
-		desc := strings.Split(wrap.Render(k.desc), "\n")
+		desc := wrapTo(k.desc, inner-indent, "")
 		if indent == 6 {
-			lines = append(lines, "  "+k.label)
+			body = append(body, "  "+t.keyLabel(k.label))
 		} else {
-			lines = append(lines, "  "+fit(k.label, labelWidth)+" "+desc[0])
+			body = append(body, "  "+t.keyLabel(fit(k.label, labelWidth))+" "+desc[0])
 			desc = desc[1:]
 		}
 		for _, d := range desc {
-			lines = append(lines, strings.Repeat(" ", indent)+d)
+			body = append(body, strings.Repeat(" ", indent)+d)
 		}
 	}
-	return append(lines, m.wrapLines(dimStyle.Render("Markers: "+outdatedMark+"outdated · pin pinned · > cursor · "+
-		"[x] selected (* when narrow). Nothing changes until you review a plan and press y."), "")...)
+	body = append(body, t.dim.paintAll(wrapTo("Markers: "+outdatedMark+"outdated · pin pinned · > cursor · "+
+		"[x] selected (* when narrow). Nothing changes until you review a plan and press y.", inner, ""))...)
+
+	room := m.bodyRoom()
+	isOpen := len(body)+2 > room && len(body)+1 <= room
+	lines := t.panel(t.title.paint("Keys"), body, pw, isOpen)
+	if margin := (m.width - pw) / 2; margin > 0 {
+		pad := strings.Repeat(" ", margin)
+		for i := range lines {
+			lines[i] = pad + lines[i]
+		}
+	}
+	return lines
 }
 
+// keyLabel paints the keys of a help label; a "(screen)" suffix stays dim.
+func (t *theme) keyLabel(s string) string {
+	if i := strings.Index(s, " ("); i >= 0 {
+		return t.accentBold.paint(s[:i]) + t.dim.paint(s[i:])
+	}
+	return t.accentBold.paint(s)
+}
+
+// statusLine is the status bar: a state chip, then the inventory totals and
+// any notice, on a full-width bar. State comes first so it survives
+// truncation on narrow terminals.
 func (m model) statusLine() string {
-	state := "ready"
+	t := currentTheme()
+	state, chip := "ready", t.chipOk
 	switch {
 	case m.mode == viewRunning && !m.sess.isFinished:
-		state = "running"
+		state, chip = "running", t.chipAccent
 		if m.sess.isCancelling {
-			state = errorStyle.Render("cancelling…")
+			state, chip = "cancelling…", t.chipBad
 		}
 	case m.pending == purposeReview:
-		state = staleStyle.Render("checking selections…")
+		state, chip = "checking selections…", t.chipWarn
 	case m.pending == purposeReceipt:
-		state = staleStyle.Render("refreshing after run…")
+		state, chip = "refreshing after run…", t.chipWarn
 	case m.mode == viewReview:
-		state = "review"
+		state, chip = "review", t.chipAccent
 	case m.mode == viewReceipt:
-		state = "receipt"
+		state, chip = "receipt", t.chipInfo
 	case m.isLoading && !m.hasInv:
-		state = "loading…"
+		state, chip = "loading…", t.chipWarn
 	case m.isLoading:
-		state = staleStyle.Render("stale, refreshing…")
+		state, chip = "stale, refreshing…", t.chipWarn
 	case m.err != nil:
-		state = errorStyle.Render("error")
+		state, chip = "error", t.chipBad
 	}
-	// State comes first so it survives truncation on narrow terminals.
-	s := "[" + state + "]"
-	if !m.hasInv {
-		return s
+	parts := []part{{"[" + state + "]", chip}}
+	if m.hasInv {
+		c := m.counts
+		sep := part{" │ ", t.barDim}
+		outdated := t.barBright
+		if c.outdated > 0 {
+			outdated = t.barAccent
+		}
+		parts = append(parts,
+			part{" ", t.barText},
+			part{fmt.Sprint(c.formulae), t.barBright}, part{" formulae · ", t.barText},
+			part{fmt.Sprint(c.casks), t.barBright}, part{" casks · ", t.barText},
+			part{fmt.Sprint(c.outdated), outdated}, part{" outdated", t.barText},
+			sep, part{"showing ", t.barText}, part{fmt.Sprint(len(m.visible)), t.barBright},
+		)
+		if n := len(m.selected); n > 0 && (m.mode == viewList || m.mode == viewDetails) {
+			parts = append(parts, sep, part{fmt.Sprintf("%d selected", n), t.barOk})
+		}
+		if m.notice != "" {
+			parts = append(parts, sep, part{m.notice, t.barAccent})
+		}
+		if f := m.filterSummary(); f != "" {
+			parts = append(parts, sep, part{f, t.barInfo})
+		}
 	}
-	c := m.counts
-	s += fmt.Sprintf(" %d formulae · %d casks · %d outdated │ showing %d", c.formulae, c.casks, c.outdated, len(m.visible))
-	if n := len(m.selected); n > 0 && (m.mode == viewList || m.mode == viewDetails) {
-		s += fmt.Sprintf(" │ %d selected", n)
-	}
-	if m.notice != "" {
-		s += " │ " + m.notice
-	}
-	if f := m.filterSummary(); f != "" {
-		s += " │ " + f
-	}
-	return s
+	return line(parts, m.width, t.barText)
 }
 
 // filterSummary describes the active type filter, outdated toggle, and search.
@@ -457,7 +599,9 @@ func (m model) filterSummary() string {
 }
 
 func (m model) hintLine() string {
+	t := currentTheme()
 	var h string
+	var keys map[string]ink
 	switch {
 	case m.isHelpVisible:
 		h = "? / esc close help"
@@ -471,8 +615,12 @@ func (m model) hintLine() string {
 		}
 	case m.mode == viewReview:
 		h = m.reviewFooter()
+		keys = map[string]ink{"y": t.okBold, "esc": t.dim}
 	case m.mode == viewRunning:
 		h = m.runFooter()
+		if m.sess.isConfirmingCancel {
+			keys = map[string]ink{"y": t.badBold}
+		}
 	case m.mode == viewReceipt:
 		h = m.receiptFooter()
 	case m.isSearching:
@@ -487,7 +635,7 @@ func (m model) hintLine() string {
 			"u review · / search · ? help · q quit",
 		)
 	}
-	return dimStyle.Render(h)
+	return t.hint(h, keys)
 }
 
 // fitHint returns the first hint that fits the terminal width, or the last
@@ -562,13 +710,6 @@ func orMissing(s string) string {
 	return s
 }
 
-func yesNo(b bool) string {
-	if b {
-		return "yes"
-	}
-	return "no"
-}
-
 func markedYesNo(b bool, mark string) string {
 	if b {
 		return strings.TrimSpace(mark) + " yes"
@@ -578,40 +719,50 @@ func markedYesNo(b bool, mark string) string {
 
 // wrapLines wraps s to the terminal width, indented by indent.
 func (m model) wrapLines(s, indent string) []string {
-	wrap := lipgloss.NewStyle().Width(max(m.width-len(indent), 20))
+	return wrapTo(s, m.width, indent)
+}
+
+// wrapTo wraps plain text s to width cells (at least 20), indented by indent,
+// without trailing padding, so the lines can be painted afterwards.
+func wrapTo(s string, width int, indent string) []string {
+	wrap := lipgloss.NewStyle().Width(max(width-len(indent), 20))
 	lines := strings.Split(wrap.Render(s), "\n")
 	for i := range lines {
-		lines[i] = indent + lines[i]
+		lines[i] = indent + strings.TrimRight(lines[i], " ")
 	}
 	return lines
 }
 
 func (m model) reviewLines() []string {
+	t := currentTheme()
 	s := m.sess
-	lines := []string{"", titleStyle.Render("Review the plan")}
+	pw := min(m.width, maxPanelWidth)
+	inner := panelInner(pw)
+	var body []string
 	if len(s.problems) > 0 {
-		lines = append(lines, "", errorStyle.Render("Changed since you selected:"))
+		body = append(body, t.badBold.paint("Changed since you selected:"))
 		for _, p := range s.problems {
-			lines = append(lines, m.wrapLines(p, "  ")...)
+			body = append(body, t.warn.paintAll(wrapTo(p, inner, "  "))...)
 		}
+		body = append(body, "")
 	}
 	if len(s.plan.Items) == 0 {
-		return append(lines, "", "Nothing left to run. Select packages again in the list and press u.")
+		body = append(body, "Nothing left to run. Select packages again in the list and press u.")
+		return append([]string{""}, t.panel(t.title.paint("Review the plan"), body, pw, false)...)
 	}
-	lines = append(lines, "")
-	lines = append(lines, m.wrapLines(fmt.Sprintf("Brew Board will run %s, in order, stopping at the first failure:",
-		commandCount(len(s.plan.Items))), "")...)
+	body = append(body, wrapTo(fmt.Sprintf("Brew Board will run %s, in order, stopping at the first failure:",
+		commandCount(len(s.plan.Items))), inner, "")...)
 	for i, it := range s.plan.Items {
-		lines = append(lines, "", fmt.Sprintf("%2d. %s", i+1, titleStyle.Render(it.Command())))
-		lines = append(lines, m.wrapLines(dimStyle.Render(it.Explain()), "    ")...)
+		body = append(body, "", t.accent.paint(fmt.Sprintf("%2d.", i+1))+" "+t.bold.paint(it.Command()))
+		body = append(body, t.dim.paintAll(wrapTo(it.Explain(), inner, "    "))...)
 	}
-	lines = append(lines, "")
-	lines = append(lines, m.wrapLines(dependencyNote, "")...)
-	lines = append(lines, dimStyle.Render("Nothing runs until you press y."))
+	body = append(body, "")
+	body = append(body, t.warn.paintAll(wrapTo(dependencyNote, inner, ""))...)
+	body = append(body, t.dim.paint("Nothing runs until you press y."))
 	if s.isCleanupOffer && s.savedPath == "" {
-		lines = append(lines, dimStyle.Render("The receipt of the previous run is not saved: esc, then s, to save it first."))
+		body = append(body, t.dim.paintAll(wrapTo("The receipt of the previous run is not saved: esc, then s, to save it first.", inner, ""))...)
 	}
-	return lines
+	return append([]string{""}, t.panel(t.title.paint("Review the plan"), body, pw, false)...)
 }
 
 func commandCount(n int) string {
@@ -668,53 +819,81 @@ const minOutputRows = 3
 // terminal the item list is windowed around the running item so the state
 // line and the output pane stay visible.
 func (m model) runLines() []string {
+	t := currentTheme()
 	s := m.sess
-	title := titleStyle.Render("Running the reviewed plan")
+	title := t.title.paint("Running the reviewed plan")
 	items := make([]string, len(s.results))
 	for i, r := range s.results {
-		items[i] = fmt.Sprintf("%2d. %s %s", i+1, fit(statusLabel(r), 14), r.Item.Command())
+		items[i] = m.runItem(t, i, r)
 	}
 	var state []string
 	switch {
 	case s.isFinished:
-		state = m.wrapLines(staleStyle.Render("Finished. Refreshing the inventory to check what changed…"), "")
+		state = t.warn.paintAll(m.wrapLines("Finished. Refreshing the inventory to check what changed…", ""))
 	case s.isConfirmingCancel:
-		state = append(m.wrapLines(errorStyle.Bold(true).Render(cancelPrompt), ""), m.wrapLines(dimStyle.Render(cancelDetail), "")...)
+		state = append(t.badBold.paintAll(m.wrapLines(cancelPrompt, "")), t.dim.paintAll(m.wrapLines(cancelDetail, ""))...)
 	case s.isCancelling:
-		state = []string{errorStyle.Render("Cancelling: waiting for Homebrew to stop…")}
+		state = []string{t.bad.paint("Cancelling: waiting for Homebrew to stop…")}
 	case s.current >= 0 && s.current < len(s.results):
-		state = []string{fmt.Sprintf("Running %d/%d: %s", s.current+1, len(s.results), s.results[s.current].Item.Command())}
+		state = []string{t.accentBold.paint(fmt.Sprintf("Running %d/%d:", s.current+1, len(s.results))) +
+			" " + s.results[s.current].Item.Command()}
 	default:
-		state = []string{"Starting…"}
+		state = []string{t.dim.paint("Starting…")}
 	}
-	label := dimStyle.Render("Output")
 
 	room := m.bodyRoom()
 	lines := append([]string{"", title}, items...)
-	lines = append(append(append(lines, ""), state...), "", label)
-	if len(lines)+minOutputRows > room {
+	lines = append(append(append(lines, ""), state...), "")
+	if len(lines)+1+minOutputRows > room { // +1: the pane's top edge
 		// Compact: no spacers, and only the items around the running one.
 		itemRoom := max(room-minOutputRows-2-len(state), 1)
 		first := clampScroll(s.current-itemRoom/2, len(items)-itemRoom)
 		lines = append([]string{title}, items[first:min(first+itemRoom, len(items))]...)
-		lines = append(append(lines, state...), label)
+		lines = append(lines, state...)
 	}
 
-	// The output pane takes the remaining rows; View truncates each line to
-	// the terminal width.
-	outRoom := max(room-len(lines), 1)
-	for _, l := range s.output[max(len(s.output)-outRoom, 0):] {
-		lines = append(lines, "  "+l)
+	// The output pane takes the remaining rows, with a bottom edge only when
+	// that still leaves minOutputRows of output.
+	outRoom := room - len(lines) - 1
+	hasBottom := outRoom-1 >= minOutputRows
+	if hasBottom {
+		outRoom--
 	}
-	return lines
+	outRoom = max(outRoom, 1)
+	out := make([]string, 0, outRoom)
+	for _, l := range s.output[max(len(s.output)-outRoom, 0):] {
+		if strings.HasPrefix(l, "$ ") {
+			l = t.accent.paint(l) // the command Brew Board started
+		}
+		out = append(out, " "+l)
+	}
+	for len(out) < outRoom {
+		out = append(out, "")
+	}
+	return append(lines, t.panel(t.dim.paint("Output"), out, m.width, !hasBottom)...)
+}
+
+// runItem is one item of the running screen: a glyph and a status word that
+// say the same thing, then the command.
+func (m model) runItem(t *theme, i int, r run.Result) string {
+	glyph, k, cmd := "○", t.dim, t.dim.paint(r.Item.Command())
+	switch r.Status {
+	case run.StatusRunning:
+		glyph, k, cmd = m.spin.View(), t.accentBold, t.bold.paint(r.Item.Command())
+	case run.StatusCompleted:
+		glyph, k, cmd = "✓", t.ok, r.Item.Command()
+	case run.StatusFailed:
+		glyph, k, cmd = "✗", t.badBold, r.Item.Command()
+	case run.StatusCancelled:
+		glyph, k, cmd = "⊘", t.warn, r.Item.Command()
+	}
+	return t.dim.paint(fmt.Sprintf("%2d.", i+1)) + " " + k.paint(glyph) + " " + k.paint(fit(statusLabel(r), 14)) + " " + cmd
 }
 
 func statusLabel(r run.Result) string {
 	switch r.Status {
 	case run.StatusCompleted, run.StatusFailed:
 		return fmt.Sprintf("[%s %d]", r.Status, r.ExitCode)
-	case run.StatusRunning:
-		return outdatedStyle.Render("[running]")
 	default:
 		return "[" + string(r.Status) + "]"
 	}
@@ -733,22 +912,99 @@ func (m model) runFooter() string {
 	}
 }
 
+// verdictGlyph is the glyph and ink of a receipt verdict; the verdict word is
+// always printed next to it.
+func verdictGlyph(t *theme, verdict string) (string, ink) {
+	switch verdict {
+	case receipt.VerdictUpgraded, receipt.VerdictCompleted:
+		return "✓", t.ok
+	case receipt.VerdictFailed:
+		return "✗", t.badBold
+	case receipt.VerdictCancelled:
+		return "⊘", t.warn
+	case receipt.VerdictUncertain:
+		return "?", t.warnBold
+	default:
+		return "○", t.dim
+	}
+}
+
 func (m model) receiptLines() []string {
+	t := currentTheme()
 	s := m.sess
 	sum := s.receipt.Summary
-	lines := []string{"", titleStyle.Render(fmt.Sprintf(
-		"%d upgraded · %d failed · %d cancelled · %d not run · %d uncertain",
-		sum.Upgraded, sum.Failed, sum.Cancelled, sum.NotRun, sum.Uncertain,
-	))}
+	chips := []struct {
+		n     int
+		label string
+		k     ink
+	}{
+		{sum.Upgraded, "upgraded", t.okBold},
+		{sum.Failed, "failed", t.badBold},
+		{sum.Cancelled, "cancelled", t.warnBold},
+		{sum.NotRun, "not run", t.bold},
+		{sum.Uncertain, "uncertain", t.warnBold},
+	}
+	var b strings.Builder
+	for i, c := range chips {
+		if i > 0 {
+			b.WriteString(t.dim.paint(" · "))
+		}
+		k := c.k
+		if c.n == 0 {
+			k = t.dim
+		}
+		b.WriteString(k.paint(fmt.Sprintf("%d %s", c.n, c.label)))
+	}
+	lines := []string{"", b.String()}
 	if s.refreshErr != nil {
 		title, _ := describeError(s.refreshErr)
-		lines = append(lines, m.wrapLines(errorStyle.Render(
+		lines = append(lines, t.bad.paintAll(m.wrapLines(
 			"[error] Could not refresh the inventory after the run ("+title+"). "+
-				"Versions below are not verified; press r to retry."), "")...)
+				"Versions below are not verified; press r to retry.", ""))...)
 	}
 	lines = append(lines, "") // the save outcome is pinned under the footer
+	next := 0                 // index of the next change line in the receipt text
 	for _, l := range strings.Split(strings.TrimRight(s.receipt.Text(), "\n"), "\n") {
-		lines = append(lines, m.wrapLines(l, "")...)
+		if next < len(s.receipt.Changes) {
+			c := s.receipt.Changes[next]
+			if prefix := fmt.Sprintf("%d. %s: ", next+1, c.Item.Command()); strings.HasPrefix(l, prefix) {
+				next++
+				lines = append(lines, m.changeLines(t, l, prefix, c.Verdict)...)
+				continue
+			}
+		}
+		var k ink
+		switch {
+		case strings.HasPrefix(l, "NOT VERIFIED"):
+			k = t.badBold
+		case strings.HasPrefix(l, "Brew Board maintenance receipt"):
+			k = t.bold
+		case strings.HasPrefix(l, "Created:"), strings.HasPrefix(l, "Homebrew:"), strings.HasPrefix(l, "Summary:"):
+			k = t.dim
+		case strings.HasPrefix(l, "A command failed"):
+			k = t.bad
+		case strings.HasPrefix(l, "A command was cancelled"), strings.HasPrefix(l, "A result is uncertain"):
+			k = t.warn
+		}
+		lines = append(lines, k.paintAll(m.wrapLines(l, ""))...)
+	}
+	return lines
+}
+
+// changeLines renders one receipt change with its verdict glyph and a
+// hanging indent; the verdict word keeps the glyph's colour.
+func (m model) changeLines(t *theme, l, prefix, verdict string) []string {
+	glyph, k := verdictGlyph(t, verdict)
+	lines := wrapTo(l, m.width-2, "")
+	for i, w := range lines {
+		if i > 0 {
+			lines[i] = "  " + w
+			continue
+		}
+		if strings.HasPrefix(w, prefix+verdict) {
+			w = prefix + k.paint(verdict) + w[len(prefix)+len(verdict):]
+		}
+		lines[i] = k.paint(glyph) + " " + w
 	}
 	return lines
 }

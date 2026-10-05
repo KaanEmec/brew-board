@@ -15,8 +15,10 @@ import (
 	"sync"
 	"time"
 
+	"github.com/charmbracelet/bubbles/spinner"
 	"github.com/charmbracelet/bubbles/textinput"
 	tea "github.com/charmbracelet/bubbletea"
+	"github.com/charmbracelet/lipgloss"
 	"github.com/charmbracelet/x/ansi"
 
 	"github.com/kaanemec/brew-board/internal/brew"
@@ -169,6 +171,7 @@ type model struct {
 	// copies of the model do not share edits.
 	selected map[pkgKey]bool
 	sess     session
+	spin     spinner.Model // animates the running item; ticks only while a run is active
 
 	mode          viewMode
 	detail        brew.Package
@@ -187,6 +190,13 @@ func New(loader brew.Loader, opts ...Option) tea.Model {
 	ti.Prompt = "/ "
 	ti.Placeholder = "search name or description"
 	ti.CharLimit = 100
+	ti.PromptStyle = lipgloss.NewStyle().Foreground(pal.accent).Bold(true)
+	ti.PlaceholderStyle = lipgloss.NewStyle().Foreground(pal.dim)
+	ti.Cursor.Style = lipgloss.NewStyle().Foreground(pal.accent)
+
+	// Detect the background now, before Bubble Tea owns the terminal, so the
+	// adaptive palette never queries it mid-session.
+	_ = lipgloss.HasDarkBackground()
 
 	m := model{
 		loader:    loader,
@@ -196,6 +206,7 @@ func New(loader brew.Loader, opts ...Option) tea.Model {
 		load:      &loadState{},
 		isLoading: true,
 		search:    ti,
+		spin:      spinner.New(spinner.WithSpinner(spinner.MiniDot)),
 		width:     80,
 		height:    24,
 	}
@@ -297,6 +308,13 @@ func (m model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m.afterLoad(msg.err), nil
 	case runEventMsg:
 		return m.handleRunEvent(msg)
+	case spinner.TickMsg:
+		if m.mode != viewRunning || !m.sess.isRunning() {
+			return m, nil // the run ended: let the tick chain stop
+		}
+		var cmd tea.Cmd
+		m.spin, cmd = m.spin.Update(msg)
+		return m, cmd
 	case tea.KeyMsg:
 		return m.handleKey(msg)
 	case InterruptMsg:

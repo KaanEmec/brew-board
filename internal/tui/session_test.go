@@ -125,7 +125,8 @@ func review(t *testing.T, m model) model {
 	return m
 }
 
-// confirm presses y and returns the execute and wait commands.
+// confirm presses y and returns the execute and wait commands; the third
+// command, the spinner tick, is dropped so tests stay deterministic.
 func confirm(t *testing.T, m model) (model, tea.Cmd, tea.Cmd) {
 	t.Helper()
 	m, cmd := press(t, m, "y")
@@ -133,8 +134,8 @@ func confirm(t *testing.T, m model) (model, tea.Cmd, tea.Cmd) {
 		t.Fatal("y returned no command")
 	}
 	batch, ok := cmd().(tea.BatchMsg)
-	if !ok || len(batch) != 2 {
-		t.Fatalf("y should start the executor and the event wait, got %#v", batch)
+	if !ok || len(batch) != 3 {
+		t.Fatalf("y should start the executor, the event wait, and the spinner tick, got %#v", batch)
 	}
 	return m, batch[0], batch[1]
 }
