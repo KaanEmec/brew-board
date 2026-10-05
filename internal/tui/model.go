@@ -567,7 +567,7 @@ func (m model) handleListKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		m.toggleRemoval()
 	case "a":
 		m.toggleAllVisible()
-	case "u":
+	case "c":
 		return m.startReview()
 	case "?":
 		m.openHelp()
@@ -598,7 +598,7 @@ var keyHelp = []struct {
 	{"enter", "package details", []string{"enter"}},
 	{"esc / q (details)", "back to list (also h, ←, backspace)", []string{"esc", "q", "h", "left", "backspace"}},
 	{"space / d / a (list)", "mark upgrade / mark removal / all visible outdated", []string{" ", "d", "a"}},
-	{"u", "review the marked removals and upgrades", []string{"u"}},
+	{"c", "continue: re-check the marks and open the review", []string{"c"}},
 	{"y / esc (review)", "run the reviewed commands / back, selections kept", []string{"y", "esc"}},
 	{"x, ctrl+c (running)", "ask to cancel the run; then y cancels, n keeps it running", []string{"x", "ctrl+c", "y", "n", "esc"}},
 	{"s / c / a (receipt)", "save receipt / review cleanup / review autoremove", []string{"s", "c", "a"}},

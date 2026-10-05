@@ -647,11 +647,12 @@ func (m model) hintLine() string {
 		h = "r retry · q quit"
 	default:
 		h = m.fitHint(
-			"space upgrade · d remove · u review · / search · f type · o outdated · r refresh · enter details · ? help · q quit",
-			"space upgrade · d remove · u review · / search · f type · o outdated · ⏎ details · ? help · q quit",
-			"space upgrade · d remove · u review · / search · ? help · q quit",
-			"u review · / search · ? help · q quit",
+			"space upgrade · d remove · c continue · / search · f type · o outdated · r refresh · enter details · ? help · q quit",
+			"space upgrade · d remove · c continue · / search · f type · o outdated · ⏎ details · ? help · q quit",
+			"space upgrade · d remove · c continue · / search · ? help · q quit",
+			"c continue · / search · ? help · q quit",
 		)
+		keys = map[string]ink{"c": t.okBold}
 	}
 	return t.hint(h, keys)
 }
@@ -765,7 +766,7 @@ func (m model) reviewLines() []string {
 		body = append(body, "")
 	}
 	if len(s.plan.Items) == 0 {
-		body = append(body, "Nothing left to run. Select packages again in the list and press u.")
+		body = append(body, "Nothing left to run. Select packages again in the list and press c.")
 		return append([]string{""}, t.panel(t.title.paint("Review the plan"), body, pw, false)...)
 	}
 	body = append(body, wrapTo(fmt.Sprintf("Brew Board will run %s, in order, stopping at the first failure:",

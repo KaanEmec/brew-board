@@ -117,7 +117,7 @@ func cursorTo(t *testing.T, m model, name string) model {
 // review presses u and completes the selection check.
 func review(t *testing.T, m model) model {
 	t.Helper()
-	m, cmd := press(t, m, "u")
+	m, cmd := press(t, m, "c")
 	m = runCmd(t, m, cmd)
 	if m.mode != viewReview {
 		t.Fatalf("mode = %v, expected review", m.mode)
@@ -219,7 +219,7 @@ func TestSelectAllVisible(t *testing.T) {
 
 func TestReviewNeedsSelection(t *testing.T) {
 	m, _ := loaded(t, 100)
-	m, cmd := press(t, m, "u")
+	m, cmd := press(t, m, "c")
 	if cmd != nil || m.mode != viewList || m.notice != "mark packages with space (upgrade) or d (remove)" {
 		t.Errorf("u without selection: cmd=%v mode=%v notice=%q", cmd != nil, m.mode, m.notice)
 	}
@@ -231,7 +231,7 @@ func TestReviewDropsStaleSelection(t *testing.T) {
 	m := sessionModel(t, loader, exec, 100)
 	m = stage(t, m, "git", "visual-studio-code")
 
-	m, cmd := press(t, m, "u")
+	m, cmd := press(t, m, "c")
 	if v := m.View(); !strings.Contains(v, "checking selections…") {
 		t.Errorf("missing checking state:\n%s", v)
 	}
@@ -307,7 +307,7 @@ func TestExecutionStartsOnce(t *testing.T) {
 	if m.mode != viewRunning {
 		t.Fatalf("mode = %v, expected running", m.mode)
 	}
-	for _, k := range []string{"y", "u", "q", "esc", "enter", "r"} {
+	for _, k := range []string{"y", "c", "q", "esc", "enter", "r"} {
 		next, cmd := press(t, m, k)
 		if cmd != nil || next.mode != viewRunning {
 			t.Errorf("%s while running: cmd=%v mode=%v", k, cmd != nil, next.mode)

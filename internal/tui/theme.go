@@ -289,7 +289,7 @@ func fitStyled(s string, w int) string {
 
 // hintKeys are the key names a footer hint can start with.
 var hintKeys = map[string]bool{
-	"space": true, "u": true, "/": true, "f": true, "o": true, "r": true, "enter": true, "⏎": true,
+	"space": true, "/": true, "f": true, "o": true, "r": true, "enter": true, "⏎": true,
 	"?": true, "q": true, "esc": true, "esc/q": true, "j/k": true, "↑/↓": true, "ctrl+c": true,
 	"y": true, "n": true, "x": true, "s": true, "c": true, "d": true, "a": true,
 }

@@ -54,7 +54,7 @@ make check                  # gofmt check, go vet, golangci-lint, go test -race
 | `space` | List: mark or unmark the highlighted outdated, unpinned package for upgrade (switches a removal mark to upgrade) |
 | `d` | List: mark or unmark the highlighted unpinned package for removal (switches an upgrade mark to removal) |
 | `a` | List: mark or unmark all visible outdated, unpinned packages for upgrade (removal marks are kept) |
-| `u` | Re-check the marks and open the review |
+| `c` | Continue: re-check the marks and open the review |
 | `y` | Review: run the listed commands |
 | `esc` | Review: back to the list, selections kept |
 | `j` / `k`, `pgdn` / `pgup` | Review, receipt, details and help: scroll |
@@ -70,13 +70,13 @@ List markers: `>` cursor row, `↑` outdated, `pin` pinned, `[x]` marked for upg
 
 ### Maintenance session
 
-Mark outdated packages for upgrade with `space` or `a`, and any installed, unpinned package for removal with `d`, then press `u`. A package is marked for one or the other, never both. The details view (`enter`) lists what a package depends on and what requires it. Brew Board reloads the inventory, drops marks that changed or break the dependency rules and says why, then shows the review: removals first, then upgrades. Nothing runs until you press `y`. Commands run one per package (`brew uninstall --formula|--cask <name>`, `brew upgrade --formula|--cask <name>`), in order, stopping at the first failure, with live output. Afterwards the inventory is reloaded and a receipt shows what changed; `s` saves it as `brewboard-receipt-<timestamp>-<id>.txt` (mode 0600) in your home directory. `c` offers `brew cleanup`; when, after the run, some formulae are installed only as dependencies and nothing installed needs them, the receipt lists them and `a` offers `brew autoremove` (Homebrew decides the final list). Each gets its own review and `y`.
+Mark outdated packages for upgrade with `space` or `a`, and any installed, unpinned package for removal with `d`, then press `c` to continue. A package is marked for one or the other, never both. The details view (`enter`) lists what a package depends on and what requires it. Brew Board reloads the inventory, drops marks that changed or break the dependency rules and says why, then shows the review: removals first, then upgrades. Nothing runs until you press `y`. Commands run one per package (`brew uninstall --formula|--cask <name>`, `brew upgrade --formula|--cask <name>`), in order, stopping at the first failure, with live output. Afterwards the inventory is reloaded and a receipt shows what changed; `s` saves it as `brewboard-receipt-<timestamp>-<id>.txt` (mode 0600) in your home directory. `c` offers `brew cleanup`; when, after the run, some formulae are installed only as dependencies and nothing installed needs them, the receipt lists them and `a` offers `brew autoremove` (Homebrew decides the final list). Each gets its own review and `y`.
 
 **Dependency rules.** A package can be removed only if every installed package that needs it is removed in the same plan; for formulae that means every keg whose full runtime dependency closure includes it, which is the check Homebrew itself makes before an uninstall. Otherwise the review drops it with "required by … — mark them for removal too, or keep …". A pinned formula cannot be removed until you `brew unpin` it. Dependents are removed before their dependencies. Brew Board never passes `--force` or `--ignore-dependencies`, and never runs `brew autoremove` unless you review it and press `y`.
 
 ## Plan and confirmation example
 
-After selecting `ripgrep` (formula) and `iterm2` (cask) and pressing `u`:
+After selecting `ripgrep` (formula) and `iterm2` (cask) and pressing `c`:
 
 ```text
 Review the plan

@@ -12,7 +12,7 @@ All notable changes to this project are documented here. The format follows [Kee
 
 ### v0.2: maintenance session
 
-- Stage outdated, unpinned packages with `space` or `a`; `u` re-checks them against a fresh inventory and opens the review.
+- Stage outdated, unpinned packages with `space` or `a`; `c` (continue) re-checks them against a fresh inventory and opens the review.
 - Review screen shows each exact command and a plain-language explanation; nothing runs until `y`.
 - Execution runs one `brew upgrade --formula|--cask <name>` per package with live output, stops at the first failure, and can be cancelled with `x`.
 - Plain-text receipt reconciled against a reloaded inventory (upgraded, failed, cancelled, not run, uncertain), saved with `s` in the home directory with mode 0600.

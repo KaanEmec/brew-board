@@ -99,7 +99,7 @@ func (m model) afterLoad(err error) model {
 	case purposeReview:
 		if err != nil {
 			m.sess = session{}
-			m.notice = "could not check selections; press u to retry"
+			m.notice = "could not check selections; press c to retry"
 			return m
 		}
 		return m.openReview()
@@ -120,7 +120,7 @@ func (m model) startReview() (tea.Model, tea.Cmd) {
 		m.notice = "mark packages with space (upgrade) or d (remove)"
 		return m, nil
 	case m.isLoading:
-		m.notice = "wait for the refresh to finish, then press u"
+		m.notice = "wait for the refresh to finish, then press c"
 		return m, nil
 	}
 	m.sess = session{}
