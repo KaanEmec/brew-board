@@ -1,10 +1,12 @@
 package brew
 
 import (
+	"encoding/json"
 	"errors"
 	"os"
 	"path/filepath"
 	"reflect"
+	"slices"
 	"testing"
 )
 
@@ -152,6 +154,208 @@ func TestParseInfoMapping(t *testing.T) {
 	}
 	if p := findPkg(t, casks, "brave-browser"); !p.AutoUpdates || p.Outdated {
 		t.Errorf("brave-browser AutoUpdates=%v Outdated=%v, want true/false", p.AutoUpdates, p.Outdated)
+	}
+}
+
+func TestParseInfoDependencies(t *testing.T) {
+	t.Parallel()
+
+	formulae, casks, err := parseInfo(readFixture(t, "info_small.json"))
+	if err != nil {
+		t.Fatalf("parseInfo: %v", err)
+	}
+	fixture := []struct {
+		name string
+		pkgs []Package
+		want []string
+	}{
+		// ada-url's keg lists only fmt; the declared simdutf is not used.
+		{name: "ada-url", pkgs: formulae, want: []string{"fmt"}},
+		// node's keg also lists fmt, but only transitively (declared_directly false).
+		{name: "node", pkgs: formulae, want: []string{
+			"ada-url", "brotli", "c-ares", "hdrhistogram_c", "icu4c@78", "libffi", "libnghttp2",
+			"libnghttp3", "libngtcp2", "libuv", "llhttp", "merve", "nbytes", "openssl@3",
+			"simdjson", "sqlite", "uvwasi", "zstd",
+		}},
+		{name: "go", pkgs: formulae},
+		{name: "android-commandlinetools", pkgs: casks, want: []string{"openjdk", "temurin"}},
+		// depends_on with only a macos requirement has no package dependencies.
+		{name: "cursor", pkgs: casks},
+	}
+	for _, tc := range fixture {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			if got := findPkg(t, tc.pkgs, tc.name).Dependencies; !reflect.DeepEqual(got, tc.want) {
+				t.Errorf("Dependencies = %q, want %q", got, tc.want)
+			}
+		})
+	}
+
+	inline := []struct {
+		name  string
+		input string
+		want  []string
+	}{
+		{
+			name:  "formula without keg info falls back to declared dependencies",
+			input: `{"formulae":[{"name":"a","dependencies":["z","b","b"],"installed":[]}]}`,
+			want:  []string{"b", "z"},
+		},
+		{
+			name:  "keg without runtime_dependencies falls back",
+			input: `{"formulae":[{"name":"a","dependencies":["b"],"installed":[{"version":"1"}]}]}`,
+			want:  []string{"b"},
+		},
+		{
+			name: "empty runtime_dependencies means none, not fallback",
+			input: `{"formulae":[{"name":"a","dependencies":["b"],` +
+				`"installed":[{"version":"1","runtime_dependencies":[]}]}]}`,
+		},
+		{
+			name: "newest keg without linked_keg; missing declared_directly kept; tap full names",
+			input: `{"formulae":[{"name":"a","installed":[` +
+				`{"version":"1","runtime_dependencies":[{"full_name":"old"}]},` +
+				`{"version":"2","runtime_dependencies":[{"full_name":"user/tap/c"},{"full_name":"b","declared_directly":true},{"full_name":"b"}]}]}]}`,
+			want: []string{"b", "user/tap/c"},
+		},
+		{
+			name: "linked keg preferred over the newest",
+			input: `{"formulae":[{"name":"a","linked_keg":"1","installed":[` +
+				`{"version":"1","runtime_dependencies":[{"full_name":"linked"}]},` +
+				`{"version":"2","runtime_dependencies":[{"full_name":"newest"}]}]}]}`,
+			want: []string{"linked"},
+		},
+		{
+			name: "linked_keg naming no installed keg falls back to the newest",
+			input: `{"formulae":[{"name":"a","linked_keg":"9","installed":[` +
+				`{"version":"1","runtime_dependencies":[{"full_name":"old"}]},` +
+				`{"version":"2","runtime_dependencies":[{"full_name":"newest"}]}]}]}`,
+			want: []string{"newest"},
+		},
+		{
+			name:  "cask depends_on strings and lists merged",
+			input: `{"casks":[{"token":"x","depends_on":{"cask":"y","formula":["b","a"],"macos":{">=":["13"]}}}]}`,
+			want:  []string{"a", "b", "y"},
+		},
+		{
+			name:  "cask depends_on of an unexpected shape is ignored",
+			input: `{"casks":[{"token":"x","depends_on":["a"]}]}`,
+		},
+		{
+			name:  "cask depends_on null",
+			input: `{"casks":[{"token":"x","depends_on":null}]}`,
+		},
+	}
+	for _, tc := range inline {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			formulae, casks, err := parseInfo([]byte(tc.input))
+			if err != nil {
+				t.Fatalf("parseInfo: %v", err)
+			}
+			all := append(formulae, casks...)
+			if len(all) != 1 {
+				t.Fatalf("got %d packages, want 1", len(all))
+			}
+			if got := all[0].Dependencies; !reflect.DeepEqual(got, tc.want) {
+				t.Errorf("Dependencies = %q, want %q", got, tc.want)
+			}
+		})
+	}
+}
+
+func TestCurrentKeg(t *testing.T) {
+	t.Parallel()
+
+	var p infoPayload
+	if err := json.Unmarshal(readFixture(t, "info_small.json"), &p); err != nil {
+		t.Fatal(err)
+	}
+	i := slices.IndexFunc(*p.Formulae, func(f jsonFormula) bool { return f.Name == "ca-certificates" })
+	if i < 0 {
+		t.Fatal("ca-certificates not in fixture")
+	}
+	f := (*p.Formulae)[i]
+	if len(f.Installed) != 2 {
+		t.Fatalf("fixture has %d ca-certificates kegs, want 2", len(f.Installed))
+	}
+	// Kegs are listed oldest first; linked_keg names the newer one.
+	if k := f.currentKeg(); k != 1 || f.Installed[k].Version != "2026-08-13" {
+		t.Errorf("currentKeg = %d, want 1 (2026-08-13)", k)
+	}
+	f.LinkedKeg = ""
+	if k := f.currentKeg(); k != 1 {
+		t.Errorf("currentKeg without linked_keg = %d, want the last keg (1)", k)
+	}
+	f.LinkedKeg = "2026-07-16"
+	if k := f.currentKeg(); k != 0 {
+		t.Errorf("currentKeg linked to the older keg = %d, want 0", k)
+	}
+	if k := (jsonFormula{}).currentKeg(); k != -1 {
+		t.Errorf("currentKeg with no kegs = %d, want -1", k)
+	}
+}
+
+func TestParseInfoRuntimeAndCaskDependencies(t *testing.T) {
+	t.Parallel()
+
+	formulae, casks, err := parseInfo(readFixture(t, "info_small.json"))
+	if err != nil {
+		t.Fatalf("parseInfo: %v", err)
+	}
+	// node's closure includes fmt, which it only needs transitively.
+	node := findPkg(t, formulae, "node")
+	if !slices.Contains(node.RuntimeDependencies, "fmt") || slices.Contains(node.Dependencies, "fmt") {
+		t.Errorf("node: RuntimeDependencies %q should include fmt, Dependencies %q should not", node.RuntimeDependencies, node.Dependencies)
+	}
+	for _, d := range node.Dependencies {
+		if !slices.Contains(node.RuntimeDependencies, d) {
+			t.Errorf("node: direct dependency %s missing from RuntimeDependencies", d)
+		}
+	}
+	if got := findPkg(t, casks, "android-commandlinetools"); got.RuntimeDependencies != nil || !reflect.DeepEqual(got.CaskDependencies, []string{"temurin"}) {
+		t.Errorf("android-commandlinetools: RuntimeDependencies %q, CaskDependencies %q", got.RuntimeDependencies, got.CaskDependencies)
+	}
+
+	inline := []struct {
+		name                   string
+		input                  string
+		runtime, caskDeps, all []string
+	}{
+		{
+			name: "closure of the linked keg",
+			input: `{"formulae":[{"name":"a","linked_keg":"1","installed":[` +
+				`{"version":"1","runtime_dependencies":[{"full_name":"c","declared_directly":false},{"full_name":"b","declared_directly":true}]},` +
+				`{"version":"2","runtime_dependencies":[{"full_name":"z"}]}]}]}`,
+			runtime: []string{"b", "c"},
+			all:     []string{"b"},
+		},
+		{
+			name:  "no keg information means no closure",
+			input: `{"formulae":[{"name":"a","dependencies":["b"],"installed":[{"version":"1"}]}]}`,
+			all:   []string{"b"},
+		},
+		{
+			name:     "cask dependencies are told apart from formula dependencies",
+			input:    `{"casks":[{"token":"x","depends_on":{"cask":["docker","y"],"formula":"docker"}}]}`,
+			caskDeps: []string{"docker", "y"},
+			all:      []string{"docker", "y"},
+		},
+	}
+	for _, tc := range inline {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			formulae, casks, err := parseInfo([]byte(tc.input))
+			if err != nil {
+				t.Fatalf("parseInfo: %v", err)
+			}
+			got := append(formulae, casks...)[0]
+			if !reflect.DeepEqual(got.RuntimeDependencies, tc.runtime) || !reflect.DeepEqual(got.CaskDependencies, tc.caskDeps) ||
+				!reflect.DeepEqual(got.Dependencies, tc.all) {
+				t.Errorf("RuntimeDependencies %q CaskDependencies %q Dependencies %q, want %q %q %q",
+					got.RuntimeDependencies, got.CaskDependencies, got.Dependencies, tc.runtime, tc.caskDeps, tc.all)
+			}
+		})
 	}
 }
 

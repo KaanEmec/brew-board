@@ -70,6 +70,7 @@ const (
 	roleName
 	roleMark
 	roleChecked
+	roleRemove
 	roleBox
 	roleFormula
 	roleCask
@@ -91,8 +92,8 @@ type theme struct {
 	row [2][roleCount]ink
 
 	// Status bar segments on the bar background, and the state chip.
-	barText, barDim, barBright, barAccent, barOk, barWarn, barInfo ink
-	chipOk, chipAccent, chipWarn, chipBad, chipInfo, chipDim       ink
+	barText, barDim, barBright, barAccent, barOk, barWarn, barBad, barInfo ink
+	chipOk, chipAccent, chipWarn, chipBad, chipInfo, chipDim               ink
 }
 
 func newTheme() *theme {
@@ -127,6 +128,7 @@ func newTheme() *theme {
 		barAccent: inkOf(fg(pal.accent).Background(pal.barBg).Bold(true)),
 		barOk:     onBar(pal.ok),
 		barWarn:   onBar(pal.warn),
+		barBad:    onBar(pal.bad),
 		barInfo:   onBar(pal.cask),
 
 		chipOk:     chip(pal.ok),
@@ -142,6 +144,7 @@ func newTheme() *theme {
 		roleName:      base,
 		roleMark:      fg(pal.accent).Bold(true),
 		roleChecked:   fg(pal.ok).Bold(true),
+		roleRemove:    fg(pal.bad).Bold(true),
 		roleBox:       fg(pal.dim),
 		roleFormula:   fg(pal.formula),
 		roleCask:      fg(pal.cask),
@@ -288,7 +291,7 @@ func fitStyled(s string, w int) string {
 var hintKeys = map[string]bool{
 	"space": true, "u": true, "/": true, "f": true, "o": true, "r": true, "enter": true, "⏎": true,
 	"?": true, "q": true, "esc": true, "esc/q": true, "j/k": true, "↑/↓": true, "ctrl+c": true,
-	"y": true, "n": true, "x": true, "s": true, "c": true,
+	"y": true, "n": true, "x": true, "s": true, "c": true, "d": true, "a": true,
 }
 
 // hint styles a footer hint: in each " · " segment the leading keys are

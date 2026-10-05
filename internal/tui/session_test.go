@@ -180,7 +180,7 @@ func TestSpaceStagesOnlyUpgradable(t *testing.T) {
 		t.Fatalf("git not selected: %v", m.selected)
 	}
 	v := m.View()
-	for _, want := range []string{"[x] git", "[ ] visual-studio-code", "1 selected"} {
+	for _, want := range []string{"[x] git", "[ ] visual-studio-code", "1 to upgrade"} {
 		if !strings.Contains(v, want) {
 			t.Errorf("view missing %q:\n%s", want, v)
 		}
@@ -220,7 +220,7 @@ func TestSelectAllVisible(t *testing.T) {
 func TestReviewNeedsSelection(t *testing.T) {
 	m, _ := loaded(t, 100)
 	m, cmd := press(t, m, "u")
-	if cmd != nil || m.mode != viewList || m.notice != "select outdated packages with space" {
+	if cmd != nil || m.mode != viewList || m.notice != "mark packages with space (upgrade) or d (remove)" {
 		t.Errorf("u without selection: cmd=%v mode=%v notice=%q", cmd != nil, m.mode, m.notice)
 	}
 }
@@ -463,7 +463,7 @@ func TestFinishedRefreshesAndShowsReceipt(t *testing.T) {
 	}
 	v := m.View()
 	for _, want := range []string{
-		"1 upgraded · 0 failed · 0 cancelled · 0 not run · 1 uncertain",
+		"1 upgraded · 0 removed · 0 failed · 0 cancelled · 0 not run · 1 uncertain",
 		"brew upgrade --formula git: upgraded, exit 0, 2.50.0 -> 2.51.0",
 		"brew upgrade --cask visual-studio-code: uncertain",
 		"A result is uncertain",
@@ -571,7 +571,7 @@ func TestReceiptBackClearsSelections(t *testing.T) {
 			if m.mode != viewList || len(m.selected) != 0 || len(m.sess.plan.Items) != 0 {
 				t.Errorf("mode=%v selected=%v plan=%v", m.mode, m.selected, m.sess.plan.Items)
 			}
-			if v := m.View(); strings.Contains(v, "selected") || !strings.Contains(v, "2.51.0") {
+			if v := m.View(); strings.Contains(v, "to upgrade") || !strings.Contains(v, "2.51.0") {
 				t.Errorf("list should show refreshed inventory and no selection:\n%s", v)
 			}
 		})
@@ -649,7 +649,7 @@ func TestHelpFitsSmallTerminal(t *testing.T) {
 	m = resize(m, 100, 24)
 	m, _ = press(t, m, "?")
 	v := m.View()
-	for _, want := range []string{"space / a", "y / esc (review)", "x, ctrl+c (running)", "s / c (receipt)", "q / ctrl+c", "Markers"} {
+	for _, want := range []string{"space / d / a (list)", "y / esc (review)", "x, ctrl+c (running)", "s / c / a (receipt)", "q / ctrl+c", "Markers"} {
 		if !strings.Contains(v, want) {
 			t.Errorf("help at 24 rows missing %q:\n%s", want, v)
 		}

@@ -21,7 +21,8 @@ import (
 // Verdicts describing what a change observably did.
 const (
 	VerdictUpgraded  = "upgraded"
-	VerdictCompleted = "completed" // cleanup only; it has no version to check
+	VerdictRemoved   = "removed"   // uninstall completed and the package is gone
+	VerdictCompleted = "completed" // cleanup and autoremove; nothing to check
 	VerdictFailed    = "failed"
 	VerdictCancelled = "cancelled"
 	VerdictNotRun    = "not run"
@@ -32,7 +33,8 @@ const (
 type Change struct {
 	Item   plan.Item
 	Result run.Result
-	// Before and After are installed versions; both nil for cleanup.
+	// Before and After are installed versions; both nil for cleanup and
+	// autoremove.
 	// After is nil when the package was not found after the run.
 	Before, After []string
 	Verdict       string
@@ -40,7 +42,7 @@ type Change struct {
 
 // Summary counts changes by verdict.
 type Summary struct {
-	Upgraded, Failed, Cancelled, NotRun, Uncertain int
+	Upgraded, Removed, Failed, Cancelled, NotRun, Uncertain int
 }
 
 // Receipt is the account of one maintenance session.
@@ -58,8 +60,9 @@ type Receipt struct {
 
 // Build reconciles each plan item with its result (by index) and the
 // post-run inventory. A completed upgrade counts as upgraded only if the
-// planned version is now installed; otherwise it is uncertain. Items without
-// a result are reported as not run.
+// planned version is now installed, and a completed uninstall counts as
+// removed only if the package is no longer installed; otherwise either is
+// uncertain. Items without a result are reported as not run.
 func Build(p plan.Plan, results []run.Result, before, after brew.Inventory, now time.Time) Receipt {
 	r := Receipt{CreatedAt: now, BrewVersion: firstNonEmpty(after.BrewVersion, before.BrewVersion), Verified: true}
 	for i, it := range p.Items {
@@ -68,7 +71,7 @@ func Build(p plan.Plan, results []run.Result, before, after brew.Inventory, now 
 			res = results[i]
 		}
 		c := Change{Item: it, Result: res}
-		if it.Op == plan.OpUpgrade {
+		if hasVersions(it.Op) {
 			c.Before = it.Package.InstalledVersions
 			if pkg, ok := plan.Find(before, it.Package.Name, it.Package.Kind); ok {
 				c.Before = pkg.InstalledVersions
@@ -86,7 +89,7 @@ func Build(p plan.Plan, results []run.Result, before, after brew.Inventory, now 
 
 // Unverified returns a copy of r for a session whose post-run inventory
 // refresh failed, so the "after" inventory Build saw is from before the run.
-// Upgrades that looked successful become uncertain and the summary is
+// Upgrades and removals that looked successful become uncertain and the summary is
 // recounted; Text says prominently that nothing was verified.
 func (r Receipt) Unverified(reason string) Receipt {
 	r.Verified = false
@@ -94,7 +97,7 @@ func (r Receipt) Unverified(reason string) Receipt {
 	r.Changes = slices.Clone(r.Changes)
 	r.Summary = Summary{}
 	for i := range r.Changes {
-		if r.Changes[i].Verdict == VerdictUpgraded {
+		if v := r.Changes[i].Verdict; v == VerdictUpgraded || v == VerdictRemoved {
 			r.Changes[i].Verdict = VerdictUncertain
 		}
 		r.Summary.count(r.Changes[i].Verdict)
@@ -106,6 +109,8 @@ func (s *Summary) count(verdict string) {
 	switch verdict {
 	case VerdictUpgraded:
 		s.Upgraded++
+	case VerdictRemoved:
+		s.Removed++
 	case VerdictFailed:
 		s.Failed++
 	case VerdictCancelled:
@@ -120,13 +125,20 @@ func (s *Summary) count(verdict string) {
 func verdict(c Change) string {
 	switch c.Result.Status {
 	case run.StatusCompleted:
-		if c.Item.Op != plan.OpUpgrade {
+		switch c.Item.Op {
+		case plan.OpUpgrade:
+			if slices.Contains(c.After, c.Item.Package.AvailableVersion) {
+				return VerdictUpgraded
+			}
+			return VerdictUncertain
+		case plan.OpUninstall:
+			if c.After == nil {
+				return VerdictRemoved
+			}
+			return VerdictUncertain
+		default:
 			return VerdictCompleted
 		}
-		if slices.Contains(c.After, c.Item.Package.AvailableVersion) {
-			return VerdictUpgraded
-		}
-		return VerdictUncertain
 	case run.StatusFailed:
 		return VerdictFailed
 	case run.StatusCancelled:
@@ -136,6 +148,11 @@ func verdict(c Change) string {
 	default:
 		return VerdictUncertain
 	}
+}
+
+// hasVersions reports whether an item's package versions are tracked.
+func hasVersions(op plan.Op) bool {
+	return op == plan.OpUpgrade || op == plan.OpUninstall
 }
 
 func firstNonEmpty(a, b string) string {
@@ -168,15 +185,15 @@ func (r Receipt) Text() string {
 				b.WriteString(", no exit code")
 			}
 		}
-		if c.Item.Op == plan.OpUpgrade {
+		if hasVersions(c.Item.Op) {
 			fmt.Fprintf(&b, ", %s", r.versionChange(c))
 		}
 		b.WriteString("\n")
 	}
 
 	s := r.Summary
-	fmt.Fprintf(&b, "\nSummary: %d upgraded, %d failed, %d cancelled, %d not run, %d uncertain\n",
-		s.Upgraded, s.Failed, s.Cancelled, s.NotRun, s.Uncertain)
+	fmt.Fprintf(&b, "\nSummary: %d upgraded, %d removed, %d failed, %d cancelled, %d not run, %d uncertain\n",
+		s.Upgraded, s.Removed, s.Failed, s.Cancelled, s.NotRun, s.Uncertain)
 	if s.Failed > 0 {
 		b.WriteString("A command failed. Re-run the command in a terminal to see Homebrew's full message.\n")
 	}
@@ -190,7 +207,7 @@ func (r Receipt) Text() string {
 	case s.Uncertain > 0 && !r.Verified:
 		b.WriteString("A result is uncertain: versions could not be checked after the run; check the package in Homebrew.\n")
 	case s.Uncertain > 0:
-		b.WriteString("A result is uncertain: the command finished but the planned version was not observed; check the package in Homebrew.\n")
+		b.WriteString("A result is uncertain: the command finished but the planned version (or removal) was not observed; check the package in Homebrew.\n")
 	}
 	return b.String()
 }
@@ -200,6 +217,10 @@ func (r Receipt) versionChange(c Change) string {
 	switch {
 	case !r.Verified:
 		return before + " before the run (after not verified)"
+	case c.Item.Op == plan.OpUninstall && c.After == nil:
+		return before + " -> removed"
+	case c.Item.Op == plan.OpUninstall:
+		return before + " (still installed)"
 	case c.After == nil:
 		return before + " -> not installed"
 	case slices.Equal(c.Before, c.After):

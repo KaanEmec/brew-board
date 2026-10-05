@@ -7,6 +7,7 @@ import (
 	"os"
 	"os/exec"
 	"os/signal"
+	"slices"
 	"strconv"
 	"strings"
 	"testing"
@@ -74,11 +75,14 @@ func fakeBrew(args []string) int {
 
 func testPlan(t *testing.T, names ...string) plan.Plan {
 	t.Helper()
-	var pkgs []brew.Package
+	var sel []plan.Selection
 	for _, n := range names {
-		pkgs = append(pkgs, brew.Package{Name: n, Kind: brew.KindFormula, Outdated: true, AvailableVersion: "2"})
+		sel = append(sel, plan.Selection{
+			Package: brew.Package{Name: n, Kind: brew.KindFormula, Outdated: true, AvailableVersion: "2"},
+			Op:      plan.OpUpgrade,
+		})
 	}
-	p, err := plan.Build(pkgs, time.Now())
+	p, err := plan.Build(sel, brew.Inventory{}, time.Now())
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -385,6 +389,17 @@ func TestLineWriterSplitsLongLinesAtRuneBoundary(t *testing.T) {
 		}
 		if strings.Join(got, "") != long {
 			t.Errorf("terminated=%v: pieces do not reassemble the input", terminated)
+		}
+	}
+}
+
+func TestDefaultEnvDisablesHiddenWork(t *testing.T) {
+	for _, want := range []string{
+		"HOMEBREW_NO_AUTO_UPDATE=1", "HOMEBREW_NO_AUTOREMOVE=1", "HOMEBREW_NO_INSTALL_CLEANUP=1",
+		"HOMEBREW_NO_ENV_HINTS=1", "HOMEBREW_NO_COLOR=1", "HOMEBREW_NO_EMOJI=1",
+	} {
+		if !slices.Contains(DefaultEnv, want) {
+			t.Errorf("DefaultEnv missing %s", want)
 		}
 	}
 }

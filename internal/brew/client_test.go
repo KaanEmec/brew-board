@@ -6,6 +6,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -385,6 +386,11 @@ func writeFakeBrew(t *testing.T, dir string) string {
 }
 
 func TestExecRunnerDisablesAutoUpdate(t *testing.T) {
+	for _, want := range []string{"HOMEBREW_NO_AUTO_UPDATE=1", "HOMEBREW_NO_AUTOREMOVE=1", "HOMEBREW_NO_INSTALL_CLEANUP=1"} {
+		if !slices.Contains(brewEnv, want) {
+			t.Errorf("brewEnv missing %s", want)
+		}
+	}
 	env, err := exec.LookPath("env")
 	if err != nil {
 		t.Skip("env not available")

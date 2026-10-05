@@ -22,6 +22,7 @@ import (
 	"github.com/charmbracelet/x/ansi"
 
 	"github.com/kaanemec/brew-board/internal/brew"
+	"github.com/kaanemec/brew-board/internal/plan"
 )
 
 // Messages produced by the load command.
@@ -167,16 +168,19 @@ type model struct {
 	kind           kindFilter
 	isOutdatedOnly bool
 
-	// selected holds the staged packages. It is replaced, never mutated, so
-	// copies of the model do not share edits.
+	// selected holds the packages marked for upgrade and removing those
+	// marked for removal; a package is in at most one of them. Both are
+	// replaced, never mutated, so copies of the model do not share edits.
 	selected map[pkgKey]bool
+	removing map[pkgKey]bool
 	sess     session
 	spin     spinner.Model // animates the running item; ticks only while a run is active
 
 	mode          viewMode
 	detail        brew.Package
-	detailScroll  int    // first visible line of the details screen
-	notice        string // one-shot status message, cleared on the next key press
+	detailNeeders []string // installed packages that depend on detail, derived when it opens
+	detailScroll  int      // first visible line of the details screen
+	notice        string   // one-shot status message, cleared on the next key press
 	isHelpVisible bool
 	helpScroll    int // first visible line of the help overlay
 
@@ -370,12 +374,18 @@ func (m *model) refreshDetail() {
 	}
 	want := keyOf(m.detail)
 	if i := slices.IndexFunc(m.all, func(p brew.Package) bool { return keyOf(p) == want }); i >= 0 {
-		m.detail = m.all[i]
+		m.openDetail(m.all[i])
 		return
 	}
 	m.mode = viewList
 	m.isHelpVisible = false
 	m.notice = m.detail.Name + " is no longer installed"
+}
+
+// openDetail shows p in the details view with its reverse dependencies.
+func (m *model) openDetail(p brew.Package) {
+	m.detail = p
+	m.detailNeeders = plan.Dependents(m.inv, p)
 }
 
 func (m model) selectedKey() (pkgKey, bool) {
@@ -547,12 +557,14 @@ func (m model) handleListKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		return m, m.loadCmd()
 	case "enter":
 		if len(m.visible) > 0 {
-			m.detail = m.visible[m.cursor]
+			m.openDetail(m.visible[m.cursor])
 			m.detailScroll = 0
 			m.mode = viewDetails
 		}
 	case " ":
 		m.toggleSelected()
+	case "d":
+		m.toggleRemoval()
 	case "a":
 		m.toggleAllVisible()
 	case "u":
@@ -585,11 +597,11 @@ var keyHelp = []struct {
 	{"r", "refresh inventory (read-only)", []string{"r"}},
 	{"enter", "package details", []string{"enter"}},
 	{"esc / q (details)", "back to list (also h, ←, backspace)", []string{"esc", "q", "h", "left", "backspace"}},
-	{"space / a", "select package / all visible outdated", []string{" ", "a"}},
-	{"u", "review the selected upgrades", []string{"u"}},
+	{"space / d / a (list)", "mark upgrade / mark removal / all visible outdated", []string{" ", "d", "a"}},
+	{"u", "review the marked removals and upgrades", []string{"u"}},
 	{"y / esc (review)", "run the reviewed commands / back, selections kept", []string{"y", "esc"}},
 	{"x, ctrl+c (running)", "ask to cancel the run; then y cancels, n keeps it running", []string{"x", "ctrl+c", "y", "n", "esc"}},
-	{"s / c (receipt)", "save receipt to home dir / review cleanup", []string{"s", "c"}},
+	{"s / c / a (receipt)", "save receipt / review cleanup / review autoremove", []string{"s", "c", "a"}},
 	{"r (receipt)", "retry the refresh after the run when it failed", []string{"r"}},
 	{"esc / enter (receipt)", "back to list, selections cleared", []string{"esc", "enter"}},
 	{"?", "toggle this help", []string{"?"}},
@@ -608,19 +620,56 @@ func unstageableReason(p brew.Package) string {
 	return ""
 }
 
-func (m *model) setSelected(keys []pkgKey, on bool) {
-	sel := maps.Clone(m.selected)
-	if sel == nil {
-		sel = map[pkgKey]bool{}
+// setMarks returns a copy of marks with keys added (on) or removed.
+func setMarks(marks map[pkgKey]bool, keys []pkgKey, on bool) map[pkgKey]bool {
+	out := maps.Clone(marks)
+	if out == nil {
+		out = map[pkgKey]bool{}
 	}
 	for _, k := range keys {
 		if on {
-			sel[k] = true
+			out[k] = true
 		} else {
-			delete(sel, k)
+			delete(out, k)
 		}
 	}
-	m.selected = sel
+	return out
+}
+
+// setSelected marks keys for upgrade (on), which clears any removal mark,
+// or clears their upgrade mark.
+func (m *model) setSelected(keys []pkgKey, on bool) {
+	m.selected = setMarks(m.selected, keys, on)
+	if on {
+		m.removing = setMarks(m.removing, keys, false)
+	}
+}
+
+// setRemoving marks keys for removal (on), which clears any upgrade mark,
+// or clears their removal mark.
+func (m *model) setRemoving(keys []pkgKey, on bool) {
+	m.removing = setMarks(m.removing, keys, on)
+	if on {
+		m.selected = setMarks(m.selected, keys, false)
+	}
+}
+
+// unmark clears both marks of keys.
+func (m *model) unmark(keys ...pkgKey) {
+	m.selected = setMarks(m.selected, keys, false)
+	m.removing = setMarks(m.removing, keys, false)
+}
+
+// markOf is the operation p is marked for, or "" when it is unmarked.
+func (m model) markOf(p brew.Package) plan.Op {
+	k := keyOf(p)
+	switch {
+	case m.removing[k]:
+		return plan.OpUninstall
+	case m.selected[k]:
+		return plan.OpUpgrade
+	}
+	return ""
 }
 
 func (m *model) toggleSelected() {
@@ -647,8 +696,43 @@ func (m *model) toggleSelected() {
 	}
 }
 
-// toggleAllVisible selects every visible outdated, unpinned package, or
-// deselects them all when they are already selected.
+// toggleRemoval marks the highlighted package for removal, or clears its
+// removal mark. Any installed package that is not pinned can be marked; the
+// review enforces the dependency rules. A notice names dependents that are
+// not marked yet.
+func (m *model) toggleRemoval() {
+	if m.pending == purposeReview {
+		m.notice = "checking selections…"
+		return
+	}
+	if len(m.visible) == 0 {
+		return
+	}
+	p := m.visible[m.cursor]
+	k := keyOf(p)
+	if m.removing[k] {
+		m.setRemoving([]pkgKey{k}, false)
+		return
+	}
+	if p.Pinned {
+		m.notice = p.Name + " is pinned; brew unpin " + p.Name + " to allow removal"
+		return
+	}
+	m.setRemoving([]pkgKey{k}, true)
+	// Dependents among the packages not marked for removal, matched by name
+	// and kind.
+	rest := m.inv
+	marked := func(q brew.Package) bool { return m.removing[keyOf(q)] }
+	rest.Formulae = slices.DeleteFunc(slices.Clone(m.inv.Formulae), marked)
+	rest.Casks = slices.DeleteFunc(slices.Clone(m.inv.Casks), marked)
+	if unmarked := plan.Dependents(rest, p); len(unmarked) > 0 {
+		m.notice = p.Name + " is required by " + strings.Join(unmarked, ", ") + "; mark them too or the review drops it"
+	}
+}
+
+// toggleAllVisible marks every visible outdated, unpinned package for
+// upgrade, or clears them all when they are already marked. Packages marked
+// for removal keep that mark.
 func (m *model) toggleAllVisible() {
 	if m.pending == purposeReview {
 		m.notice = "checking selections…"
@@ -657,7 +741,7 @@ func (m *model) toggleAllVisible() {
 	var keys []pkgKey
 	isAllSelected := true
 	for _, p := range m.visible {
-		if unstageableReason(p) != "" {
+		if unstageableReason(p) != "" || m.removing[keyOf(p)] {
 			continue
 		}
 		keys = append(keys, keyOf(p))

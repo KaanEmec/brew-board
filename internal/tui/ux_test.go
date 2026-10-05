@@ -358,7 +358,7 @@ func TestHelpListsEveryBinding(t *testing.T) {
 			t.Errorf("keyHelp lists %q, which no handler matches", k)
 		}
 	}
-	for _, want := range []string{"j", "k", "g", "G", "/", "f", "o", "r", "enter", " ", "a", "u", "y", "x", "s", "c", "?", "q", "ctrl+c", "esc", "n", "pgdown", "ctrl+d"} {
+	for _, want := range []string{"j", "k", "g", "G", "/", "f", "o", "r", "enter", " ", "a", "u", "d", "y", "x", "s", "c", "?", "q", "ctrl+c", "esc", "n", "pgdown", "ctrl+d"} {
 		if !inCode[want] {
 			t.Errorf("expected binding %q not found in the handlers (extraction broken?)", want)
 		}

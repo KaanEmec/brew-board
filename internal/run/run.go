@@ -36,9 +36,14 @@ const waitDelayNote = "(output pipe closed after wait delay)"
 
 // DefaultEnv is appended to os.Environ when Executor.Env is nil.
 // It mirrors brewEnv in internal/brew/runner.go so upgrades run under the
-// same conditions as inventory reads; consolidate the two later.
+// same conditions as inventory reads; consolidate the two later. Besides
+// disabling the hidden `brew update`, it stops Homebrew from running
+// autoremove after `brew uninstall` and `brew cleanup`, and a cleanup after
+// `brew upgrade`, so only the reviewed commands change the installation.
 var DefaultEnv = []string{
 	"HOMEBREW_NO_AUTO_UPDATE=1",
+	"HOMEBREW_NO_AUTOREMOVE=1",
+	"HOMEBREW_NO_INSTALL_CLEANUP=1",
 	"HOMEBREW_NO_ENV_HINTS=1",
 	"HOMEBREW_NO_COLOR=1",
 	"HOMEBREW_NO_EMOJI=1",

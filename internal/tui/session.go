@@ -29,6 +29,8 @@ const (
 	cancelDetail = "y interrupts the running Homebrew command and skips the remaining ones · n keeps it running"
 	// dependencyNote is shown on every review screen.
 	dependencyNote = "Homebrew may also upgrade dependencies or do related work of its own."
+	// removalWarning is shown on a review screen that removes packages.
+	removalWarning = "Removal deletes the package's files; Brew Board never passes --force or --ignore-dependencies."
 )
 
 // Executor runs a confirmed plan; run.Executor implements it.
@@ -52,11 +54,11 @@ type runEventMsg struct {
 type session struct {
 	plan plan.Plan
 	// Review.
-	staged         []brew.Package // selection snapshot taken when u was pressed
-	problems       []string       // stale selections dropped from the plan
-	isCleanupOffer bool           // review opened from a receipt; esc returns there
-	receiptPlan    plan.Plan      // the receipt's plan while its cleanup offer is reviewed
-	scroll         int            // first visible body line of the review or receipt screen
+	staged      []plan.Selection // selection snapshot taken when u was pressed
+	problems    []string         // selections dropped from the plan, with the reason
+	isFollowUp  bool             // cleanup or autoremove review opened from a receipt; esc returns there
+	receiptPlan plan.Plan        // the receipt's plan while its follow-up is reviewed
+	scroll      int              // first visible body line of the review or receipt screen
 
 	// Execution.
 	before             brew.Inventory // inventory at confirmation
@@ -72,7 +74,8 @@ type session struct {
 
 	// Receipt.
 	receipt    receipt.Receipt
-	refreshErr error // post-run refresh failed; versions are not verified
+	orphans    []string // dependency-only formulae nothing installed needs after the run
+	refreshErr error    // post-run refresh failed; versions are not verified
 	savedPath  string
 	saveErr    error
 }
@@ -113,8 +116,8 @@ func (m model) afterLoad(err error) model {
 // review screen opens.
 func (m model) startReview() (tea.Model, tea.Cmd) {
 	switch {
-	case len(m.selected) == 0:
-		m.notice = "select outdated packages with space"
+	case len(m.selected) == 0 && len(m.removing) == 0:
+		m.notice = "mark packages with space (upgrade) or d (remove)"
 		return m, nil
 	case m.isLoading:
 		m.notice = "wait for the refresh to finish, then press u"
@@ -122,14 +125,24 @@ func (m model) startReview() (tea.Model, tea.Cmd) {
 	}
 	m.sess = session{}
 	for _, p := range m.all {
-		if m.selected[keyOf(p)] {
-			m.sess.staged = append(m.sess.staged, p)
+		k := keyOf(p)
+		switch {
+		case m.selected[k] && m.removing[k]:
+			// The key handlers keep the marks exclusive; never guess which one was meant.
+			m.sess.problems = append(m.sess.problems, p.Name+": marked for both upgrade and removal — removed from plan")
+			m.unmark(k)
+		case m.removing[k]:
+			m.sess.staged = append(m.sess.staged, plan.Selection{Package: p, Op: plan.OpUninstall})
+		case m.selected[k]:
+			m.sess.staged = append(m.sess.staged, plan.Selection{Package: p, Op: plan.OpUpgrade})
 		}
 	}
-	for k := range m.selected {
-		if !slices.ContainsFunc(m.sess.staged, func(p brew.Package) bool { return keyOf(p) == k }) {
-			m.sess.problems = append(m.sess.problems, k.name+": no longer installed — removed from plan")
-			m.setSelected([]pkgKey{k}, false)
+	for _, marks := range []map[pkgKey]bool{m.selected, m.removing} {
+		for k := range marks {
+			if !slices.ContainsFunc(m.all, func(p brew.Package) bool { return keyOf(p) == k }) {
+				m.sess.problems = append(m.sess.problems, k.name+": no longer installed — removed from plan")
+				m.unmark(k)
+			}
 		}
 	}
 	slices.Sort(m.sess.problems)
@@ -141,30 +154,44 @@ func (m model) startReview() (tea.Model, tea.Cmd) {
 }
 
 // openReview builds the plan from the staged snapshot, validates it against
-// the inventory just loaded, and drops stale items from plan and selection.
-// Kept items then carry the freshly loaded package, so the review shows the
-// versions installed now rather than at staging.
+// the inventory just loaded, and drops blocked or stale items from plan and
+// marks. Dropping an item can block another (a removal whose dependent was
+// dropped), so validation repeats until the plan is clean. Kept items then
+// carry the freshly loaded package, so the review shows the versions
+// installed now rather than at staging.
 func (m model) openReview() model {
 	now := m.now()
-	var kept []brew.Package
-	for _, p := range m.sess.staged {
-		if reason := unstageableReason(p); reason != "" {
-			m.dropStale(p, reason)
+	var kept []plan.Selection
+	for _, sel := range m.sess.staged {
+		switch {
+		case sel.Op == plan.OpUpgrade:
+			if reason := unstageableReason(sel.Package); reason != "" {
+				m.dropStale(sel.Package, reason)
+				continue
+			}
+		case sel.Package.Pinned: // plan.Build would reject the whole plan
+			m.dropStale(sel.Package, plan.ErrPinned.Error())
 			continue
 		}
-		kept = append(kept, p)
+		kept = append(kept, sel)
 	}
-	p, err := plan.Build(kept, now)
+	p, err := plan.Build(kept, m.inv, now)
 	if err != nil && !errors.Is(err, plan.ErrEmpty) {
 		m.sess.problems = append(m.sess.problems, "cannot build plan: "+err.Error())
 		p = plan.Plan{CreatedAt: now}
 	}
-	stale := map[pkgKey]bool{}
-	for _, pr := range p.Validate(m.inv) {
-		m.dropStale(pr.Item.Package, pr.Reason)
-		stale[keyOf(pr.Item.Package)] = true
+	for range len(p.Items) + 1 { // each pass drops at least one item or ends
+		problems := p.Validate(m.inv)
+		if len(problems) == 0 {
+			break
+		}
+		blocked := map[pkgKey]bool{}
+		for _, pr := range problems {
+			m.dropStale(pr.Item.Package, pr.Reason)
+			blocked[keyOf(pr.Item.Package)] = true
+		}
+		p.Items = slices.DeleteFunc(slices.Clone(p.Items), func(it plan.Item) bool { return blocked[keyOf(it.Package)] })
 	}
-	p.Items = slices.DeleteFunc(p.Items, func(it plan.Item) bool { return stale[keyOf(it.Package)] })
 	for i, it := range p.Items {
 		k := keyOf(it.Package)
 		if j := slices.IndexFunc(m.all, func(fresh brew.Package) bool { return keyOf(fresh) == k }); j >= 0 {
@@ -182,7 +209,7 @@ func (m model) openReview() model {
 
 func (m *model) dropStale(p brew.Package, reason string) {
 	m.sess.problems = append(m.sess.problems, p.Name+": "+reason+" — removed from plan")
-	m.setSelected([]pkgKey{keyOf(p)}, false)
+	m.unmark(keyOf(p))
 }
 
 // scrollDelta maps a scroll key to a line offset and reports whether msg was
@@ -220,9 +247,9 @@ func (m model) handleReviewKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	}
 	switch msg.String() {
 	case "esc":
-		if m.sess.isCleanupOffer {
+		if m.sess.isFollowUp {
 			m.sess.plan = m.sess.receiptPlan
-			m.sess.isCleanupOffer = false
+			m.sess.isFollowUp = false
 			m.sess.scroll = 0
 			m.mode = viewReceipt
 			return m, nil
@@ -393,6 +420,7 @@ func (m model) openReceipt(refreshErr error) model {
 		m.sess.receipt = m.sess.receipt.Unverified(title)
 	}
 	m.sess.refreshErr = refreshErr
+	m.sess.orphans = m.orphans()
 	m.sess.savedPath, m.sess.saveErr = "", nil
 	m.sess.scroll = 0
 	m.mode = viewReceipt
@@ -407,20 +435,17 @@ func (m model) handleReceiptKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	case "s":
 		m.saveReceipt()
 	case "c":
-		if m.isLoading {
-			m.notice = loadBusyNotice
-			return m, nil
-		}
 		if slices.ContainsFunc(m.sess.plan.Items, func(it plan.Item) bool { return it.Op == plan.OpCleanup }) {
 			m.notice = "cleanup already ran in this session"
 			return m, nil
 		}
-		m.sess.receiptPlan = m.sess.plan
-		m.sess.plan = plan.Plan{CreatedAt: m.now()}.WithCleanup()
-		m.sess.problems = nil
-		m.sess.scroll = 0
-		m.sess.isCleanupOffer = true
-		m.mode = viewReview
+		m.offerFollowUp(plan.Plan{CreatedAt: m.now()}.WithCleanup())
+	case "a":
+		if len(m.sess.orphans) == 0 {
+			m.notice = "no dependency-only formulae are unneeded now"
+			return m, nil
+		}
+		m.offerFollowUp(plan.Plan{CreatedAt: m.now()}.WithAutoremove())
 	case "r":
 		if m.sess.refreshErr == nil || m.isLoading {
 			return m, nil
@@ -433,10 +458,35 @@ func (m model) handleReceiptKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			m.pending = purposeBrowse // a retry in flight now only refreshes the list
 		}
 		m.sess = session{}
-		m.selected = nil
+		m.selected, m.removing = nil, nil
 		m.mode = viewList
 	}
 	return m, nil
+}
+
+// offerFollowUp opens the review of a one-item plan offered on the receipt
+// (cleanup or autoremove); esc returns to the receipt. It runs only after y.
+func (m *model) offerFollowUp(p plan.Plan) {
+	if m.isLoading {
+		m.notice = loadBusyNotice
+		return
+	}
+	m.sess.receiptPlan = m.sess.plan
+	m.sess.plan = p
+	m.sess.problems = nil
+	m.sess.scroll = 0
+	m.sess.isFollowUp = true
+	m.mode = viewReview
+}
+
+// orphans lists the formulae that are, after the run, installed only as
+// dependencies that nothing installed needs: what brew autoremove would
+// consider now, whatever the run did. It reads the post-run inventory, so a
+// removal that reported success but left the package installed changes
+// nothing, and dependency-only formulae unneeded before the run are listed
+// too. Homebrew decides the final list.
+func (m model) orphans() []string {
+	return plan.Orphans(m.inv, plan.Plan{})
 }
 
 // StopRun cancels a run still active in final, the model returned by

@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"path"
+	"slices"
 	"sort"
 	"strings"
 )
@@ -26,14 +27,16 @@ type jsonFormula struct {
 	Versions struct {
 		Stable string `json:"stable"`
 	} `json:"versions"`
-	Installed []struct {
-		Version            string `json:"version"`
-		InstalledOnRequest bool   `json:"installed_on_request"`
-	} `json:"installed"`
-	Outdated   bool `json:"outdated"`
-	Pinned     bool `json:"pinned"`
-	Deprecated bool `json:"deprecated"`
-	Disabled   bool `json:"disabled"`
+	// Dependencies are the formula's declared (direct) dependencies.
+	Dependencies []string `json:"dependencies"`
+	// Installed lists the kegs, oldest first.
+	Installed []jsonKeg `json:"installed"`
+	// LinkedKeg is the version of the keg linked into the prefix, if any.
+	LinkedKeg  string `json:"linked_keg"`
+	Outdated   bool   `json:"outdated"`
+	Pinned     bool   `json:"pinned"`
+	Deprecated bool   `json:"deprecated"`
+	Disabled   bool   `json:"disabled"`
 }
 
 type jsonCask struct {
@@ -50,6 +53,27 @@ type jsonCask struct {
 	Deprecated  bool     `json:"deprecated"`
 	Disabled    bool     `json:"disabled"`
 	AutoUpdates bool     `json:"auto_updates"`
+	// DependsOn is decoded leniently (see caskDependencies) so an unexpected
+	// shape never fails the whole inventory.
+	DependsOn json.RawMessage `json:"depends_on"`
+}
+
+// jsonKeg is one installed version of a formula.
+type jsonKeg struct {
+	Version            string `json:"version"`
+	InstalledOnRequest bool   `json:"installed_on_request"`
+	// RuntimeDependencies is the keg's full runtime closure; a nil pointer
+	// means brew reported no keg dependency information.
+	RuntimeDependencies *[]jsonRuntimeDep `json:"runtime_dependencies"`
+}
+
+// jsonRuntimeDep is one entry of an installed keg's runtime_dependencies.
+type jsonRuntimeDep struct {
+	FullName string `json:"full_name"`
+	// DeclaredDirectly is false for dependencies pulled in transitively.
+	// Older Homebrew versions omit it; those entries are kept, erring on the
+	// side of reporting more dependents.
+	DeclaredDirectly *bool `json:"declared_directly"`
 }
 
 // outdatedPayload is the top level of `brew outdated --json=v2`.
@@ -119,7 +143,83 @@ func (f jsonFormula) toPackage() Package {
 			pkg.InstalledOnRequest = true
 		}
 	}
+	pkg.Dependencies, pkg.RuntimeDependencies = f.dependencies()
 	return pkg
+}
+
+// currentKeg returns the index of the keg Homebrew checks: the one whose
+// version equals linked_keg, else the last listed (brew lists kegs oldest
+// first). It returns -1 when nothing is installed.
+func (f jsonFormula) currentKeg() int {
+	if f.LinkedKeg != "" {
+		if i := slices.IndexFunc(f.Installed, func(k jsonKeg) bool { return k.Version == f.LinkedKeg }); i >= 0 {
+			return i
+		}
+	}
+	return len(f.Installed) - 1
+}
+
+// dependencies returns the current keg's directly declared runtime
+// dependencies and its full runtime closure. Without keg information the
+// direct list falls back to the formula's declared dependencies and the
+// closure is nil.
+func (f jsonFormula) dependencies() (direct, closure []string) {
+	i := f.currentKeg()
+	if i < 0 || f.Installed[i].RuntimeDependencies == nil {
+		return normalizeNames(f.Dependencies), nil
+	}
+	var all []string
+	for _, d := range *f.Installed[i].RuntimeDependencies {
+		all = append(all, d.FullName)
+		if d.DeclaredDirectly != nil && !*d.DeclaredDirectly {
+			continue
+		}
+		direct = append(direct, d.FullName)
+	}
+	return normalizeNames(direct), normalizeNames(all)
+}
+
+// caskDependencies extracts depends_on.formula and depends_on.cask. Each may
+// be a string or a list of strings; anything else (including macos and arch
+// requirements) is ignored.
+func caskDependencies(raw json.RawMessage) (formulae, casks []string) {
+	var obj map[string]json.RawMessage
+	if len(raw) == 0 || json.Unmarshal(raw, &obj) != nil {
+		return nil, nil
+	}
+	names := func(key string) []string {
+		v, ok := obj[key]
+		if !ok {
+			return nil
+		}
+		var one string
+		var many []string
+		switch {
+		case json.Unmarshal(v, &many) == nil:
+			return normalizeNames(many)
+		case json.Unmarshal(v, &one) == nil:
+			return normalizeNames([]string{one})
+		}
+		return nil
+	}
+	return names("formula"), names("cask")
+}
+
+// normalizeNames sorts names and drops empties and duplicates. It returns nil
+// for an empty result.
+func normalizeNames(names []string) []string {
+	out := make([]string, 0, len(names))
+	for _, n := range names {
+		if n != "" {
+			out = append(out, n)
+		}
+	}
+	slices.Sort(out)
+	out = slices.Compact(out)
+	if len(out) == 0 {
+		return nil
+	}
+	return out
 }
 
 func (c jsonCask) toPackage() Package {
@@ -142,6 +242,9 @@ func (c jsonCask) toPackage() Package {
 	if c.Installed != "" {
 		pkg.InstalledVersions = []string{c.Installed}
 	}
+	formulae, casks := caskDependencies(c.DependsOn)
+	pkg.Dependencies = normalizeNames(append(slices.Clone(formulae), casks...))
+	pkg.CaskDependencies = casks
 	return pkg
 }
 

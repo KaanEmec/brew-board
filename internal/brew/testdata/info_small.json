@@ -1267,7 +1267,14 @@
    ],
    "caveats": "Default Android SDK root is /opt/homebrew/share/android-commandlinetools\n\nandroid-commandlinetools requires Java. You can install the latest version with:\n  brew install --cask temurin\n",
    "caveats_rosetta": null,
-   "depends_on": {},
+   "depends_on": {
+    "formula": [
+     "openjdk"
+    ],
+    "cask": [
+     "temurin"
+    ]
+   },
    "conflicts_with": null,
    "container": null,
    "rename": [],

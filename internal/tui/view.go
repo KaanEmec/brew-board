@@ -10,6 +10,7 @@ import (
 	"github.com/charmbracelet/x/ansi"
 
 	"github.com/kaanemec/brew-board/internal/brew"
+	"github.com/kaanemec/brew-board/internal/plan"
 	"github.com/kaanemec/brew-board/internal/receipt"
 	"github.com/kaanemec/brew-board/internal/run"
 )
@@ -207,7 +208,7 @@ func (m model) listLines() []string {
 	end := min(m.offset+m.listHeight(), len(m.visible))
 	for i := m.offset; i < end; i++ {
 		p := m.visible[i]
-		lines = append(lines, cols.row(t, p, i == m.cursor, m.selected[keyOf(p)]))
+		lines = append(lines, cols.row(t, p, i == m.cursor, m.markOf(p)))
 	}
 	return lines
 }
@@ -307,10 +308,10 @@ func (c columns) header(t *theme) string {
 }
 
 // row renders one package. isCursor marks the highlighted row, which is
-// painted on the selection background across the full width; isStaged marks
-// a package selected for the maintenance session. The text is the same with
-// or without colour.
-func (c columns) row(t *theme, p brew.Package, isCursor, isStaged bool) string {
+// painted on the selection background across the full width; mark is the
+// operation the package is marked for in the maintenance session, or "". The
+// text is the same with or without colour.
+func (c columns) row(t *theme, p brew.Package, isCursor bool, mark plan.Op) string {
 	inks := &t.row[0]
 	if isCursor {
 		inks = &t.row[1]
@@ -329,9 +330,12 @@ func (c columns) row(t *theme, p brew.Package, isCursor, isStaged bool) string {
 		lead = cursorMarker
 	}
 	switch {
-	case isStaged && !c.hasCheck:
+	case mark == plan.OpUpgrade && !c.hasCheck:
 		put(rolePlain, lead)
 		put(roleChecked, "* ")
+	case mark == plan.OpUninstall && !c.hasCheck:
+		put(rolePlain, lead)
+		put(roleRemove, "- ")
 	case p.Outdated:
 		put(rolePlain, lead)
 		put(roleMark, outdatedMark)
@@ -341,8 +345,11 @@ func (c columns) row(t *theme, p brew.Package, isCursor, isStaged bool) string {
 	if c.hasCheck {
 		// Boxes only on rows that can be (or are) staged, to keep the list calm.
 		switch {
-		case isStaged:
+		case mark == plan.OpUpgrade:
 			put(roleChecked, "[x]")
+			put(rolePlain, " ")
+		case mark == plan.OpUninstall:
+			put(roleRemove, "[-]")
 			put(rolePlain, " ")
 		case unstageableReason(p) == "":
 			put(roleBox, "[ ]")
@@ -459,6 +466,8 @@ func (m model) detailLines() []string {
 	} else {
 		field("Auto-updates", missing, t.dim)
 	}
+	field("Depends on", strings.Join(p.Dependencies, ", "), ink{})
+	field("Required by", strings.Join(m.detailNeeders, ", "), ink{})
 	field("Description", p.Description, ink{})
 	field("Homepage", p.Homepage, t.cask)
 	lines = append(lines, t.panel(t.title.paint("Package details"), body, pw, false)...)
@@ -506,7 +515,7 @@ func (m model) helpLines() []string {
 		}
 	}
 	body = append(body, t.dim.paintAll(wrapTo("Markers: "+outdatedMark+"outdated · pin pinned · > cursor · "+
-		"[x] selected (* when narrow). Nothing changes until you review a plan and press y.", inner, ""))...)
+		"[x] marked for upgrade, [-] for removal (* / - when narrow). Nothing changes until you review a plan and press y.", inner, ""))...)
 
 	room := m.bodyRoom()
 	isOpen := len(body)+2 > room && len(body)+1 <= room
@@ -570,8 +579,17 @@ func (m model) statusLine() string {
 			part{fmt.Sprint(c.outdated), outdated}, part{" outdated", t.barText},
 			sep, part{"showing ", t.barText}, part{fmt.Sprint(len(m.visible)), t.barBright},
 		)
-		if n := len(m.selected); n > 0 && (m.mode == viewList || m.mode == viewDetails) {
-			parts = append(parts, sep, part{fmt.Sprintf("%d selected", n), t.barOk})
+		if up, rm := len(m.selected), len(m.removing); up+rm > 0 && (m.mode == viewList || m.mode == viewDetails) {
+			parts = append(parts, sep)
+			if up > 0 {
+				parts = append(parts, part{fmt.Sprintf("%d to upgrade", up), t.barOk})
+			}
+			if up > 0 && rm > 0 {
+				parts = append(parts, part{" · ", t.barText})
+			}
+			if rm > 0 {
+				parts = append(parts, part{fmt.Sprintf("%d to remove", rm), t.barBad})
+			}
 		}
 		if m.notice != "" {
 			parts = append(parts, sep, part{m.notice, t.barAccent})
@@ -629,9 +647,9 @@ func (m model) hintLine() string {
 		h = "r retry · q quit"
 	default:
 		h = m.fitHint(
-			"space select · u review · / search · f type · o outdated · r refresh · enter details · ? help · q quit",
-			"space select · u review · / search · f type · o outdated · r refresh · ⏎ details · ? help · q quit",
-			"space select · u review · / search · ? help · q quit",
+			"space upgrade · d remove · u review · / search · f type · o outdated · r refresh · enter details · ? help · q quit",
+			"space upgrade · d remove · u review · / search · f type · o outdated · ⏎ details · ? help · q quit",
+			"space upgrade · d remove · u review · / search · ? help · q quit",
 			"u review · / search · ? help · q quit",
 		)
 	}
@@ -740,7 +758,7 @@ func (m model) reviewLines() []string {
 	inner := panelInner(pw)
 	var body []string
 	if len(s.problems) > 0 {
-		body = append(body, t.badBold.paint("Changed since you selected:"))
+		body = append(body, t.badBold.paint("Dropped from the plan:"))
 		for _, p := range s.problems {
 			body = append(body, t.warn.paintAll(wrapTo(p, inner, "  "))...)
 		}
@@ -752,17 +770,39 @@ func (m model) reviewLines() []string {
 	}
 	body = append(body, wrapTo(fmt.Sprintf("Brew Board will run %s, in order, stopping at the first failure:",
 		commandCount(len(s.plan.Items))), inner, "")...)
+	counts := map[plan.Op]int{}
+	for _, it := range s.plan.Items {
+		counts[it.Op]++
+	}
 	for i, it := range s.plan.Items {
+		if title := opGroup(it.Op); title != "" && (i == 0 || s.plan.Items[i-1].Op != it.Op) {
+			body = append(body, "", t.bold.paint(fmt.Sprintf("%s (%d)", title, counts[it.Op])))
+		}
 		body = append(body, "", t.accent.paint(fmt.Sprintf("%2d.", i+1))+" "+t.bold.paint(it.Command()))
 		body = append(body, t.dim.paintAll(wrapTo(it.Explain(), inner, "    "))...)
 	}
 	body = append(body, "")
+	if counts[plan.OpUninstall] > 0 {
+		body = append(body, t.bad.paintAll(wrapTo(removalWarning, inner, ""))...)
+	}
 	body = append(body, t.warn.paintAll(wrapTo(dependencyNote, inner, ""))...)
 	body = append(body, t.dim.paint("Nothing runs until you press y."))
-	if s.isCleanupOffer && s.savedPath == "" {
+	if s.isFollowUp && s.savedPath == "" {
 		body = append(body, t.dim.paintAll(wrapTo("The receipt of the previous run is not saved: esc, then s, to save it first.", inner, ""))...)
 	}
 	return append([]string{""}, t.panel(t.title.paint("Review the plan"), body, pw, false)...)
+}
+
+// opGroup is the review heading of an operation's items, or "" for
+// operations reviewed on their own (cleanup, autoremove).
+func opGroup(op plan.Op) string {
+	switch op {
+	case plan.OpUninstall:
+		return "Remove"
+	case plan.OpUpgrade:
+		return "Upgrade"
+	}
+	return ""
 }
 
 func commandCount(n int) string {
@@ -916,7 +956,7 @@ func (m model) runFooter() string {
 // always printed next to it.
 func verdictGlyph(t *theme, verdict string) (string, ink) {
 	switch verdict {
-	case receipt.VerdictUpgraded, receipt.VerdictCompleted:
+	case receipt.VerdictUpgraded, receipt.VerdictRemoved, receipt.VerdictCompleted:
 		return "✓", t.ok
 	case receipt.VerdictFailed:
 		return "✗", t.badBold
@@ -939,6 +979,7 @@ func (m model) receiptLines() []string {
 		k     ink
 	}{
 		{sum.Upgraded, "upgraded", t.okBold},
+		{sum.Removed, "removed", t.okBold},
 		{sum.Failed, "failed", t.badBold},
 		{sum.Cancelled, "cancelled", t.warnBold},
 		{sum.NotRun, "not run", t.bold},
@@ -961,6 +1002,14 @@ func (m model) receiptLines() []string {
 		lines = append(lines, t.bad.paintAll(m.wrapLines(
 			"[error] Could not refresh the inventory after the run ("+title+"). "+
 				"Versions below are not verified; press r to retry.", ""))...)
+	}
+	if n := len(s.orphans); n > 0 {
+		msg := fmt.Sprintf("%d formulae are installed only as dependencies and nothing installed needs them: ", n)
+		if n == 1 {
+			msg = "1 formula is installed only as a dependency and nothing installed needs it: "
+		}
+		lines = append(lines, t.warn.paintAll(m.wrapLines(msg+strings.Join(s.orphans, ", ")+
+			" — press a to review brew autoremove (Homebrew decides the final list).", ""))...)
 	}
 	lines = append(lines, "") // the save outcome is pinned under the footer
 	next := 0                 // index of the next change line in the receipt text
@@ -1011,6 +1060,9 @@ func (m model) changeLines(t *theme, l, prefix, verdict string) []string {
 
 func (m model) receiptFooter() string {
 	h, short := "s save · c cleanup · esc back to list", "s save · c cleanup · esc back"
+	if len(m.sess.orphans) > 0 {
+		h, short = "s save · c cleanup · a autoremove · esc back to list", "s save · c cleanup · a autoremove · esc back"
+	}
 	if m.sess.refreshErr != nil {
 		h, short = "r retry refresh · "+h, "r retry · "+short
 	}

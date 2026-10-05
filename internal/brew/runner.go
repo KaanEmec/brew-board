@@ -12,9 +12,14 @@ import (
 
 // brewEnv is appended to the inherited environment for every brew call.
 // HOMEBREW_NO_AUTO_UPDATE stops read commands such as `brew outdated` from
-// silently running `brew update` first; the others keep output plain.
+// silently running `brew update` first. HOMEBREW_NO_AUTOREMOVE and
+// HOMEBREW_NO_INSTALL_CLEANUP stop `brew uninstall`, `brew cleanup` and
+// `brew upgrade` from running autoremove or a cleanup the user did not
+// review. The others keep output plain. Keep it identical to run.DefaultEnv.
 var brewEnv = []string{
 	"HOMEBREW_NO_AUTO_UPDATE=1",
+	"HOMEBREW_NO_AUTOREMOVE=1",
+	"HOMEBREW_NO_INSTALL_CLEANUP=1",
 	"HOMEBREW_NO_ENV_HINTS=1",
 	"HOMEBREW_NO_COLOR=1",
 	"HOMEBREW_NO_EMOJI=1",

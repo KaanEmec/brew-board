@@ -51,24 +51,28 @@ make check                  # gofmt check, go vet, golangci-lint, go test -race
 | `r` | Refresh the inventory |
 | `enter` | Open package details |
 | `esc`, `q`, `backspace`, `left`, `h` | Leave details |
-| `space` | Select or unselect the highlighted outdated, unpinned package |
-| `a` | Select or unselect all visible outdated, unpinned packages |
-| `u` | Re-check the selection and open the review |
+| `space` | List: mark or unmark the highlighted outdated, unpinned package for upgrade (switches a removal mark to upgrade) |
+| `d` | List: mark or unmark the highlighted unpinned package for removal (switches an upgrade mark to removal) |
+| `a` | List: mark or unmark all visible outdated, unpinned packages for upgrade (removal marks are kept) |
+| `u` | Re-check the marks and open the review |
 | `y` | Review: run the listed commands |
 | `esc` | Review: back to the list, selections kept |
 | `j` / `k`, `pgdn` / `pgup` | Review, receipt, details and help: scroll |
 | `x` / `ctrl+c` | Running: ask to cancel the run (`y` interrupts the running command and skips the remaining ones, `n` or `esc` keeps it running) |
 | `s` | Receipt: save it to your home directory (the saved path or error shows under the footer) |
 | `c` | Receipt: review `brew cleanup` |
+| `a` | Receipt: review `brew autoremove` (offered after any run when formulae installed only as dependencies are needed by nothing installed) |
 | `esc` / `enter` | Receipt: back to the list, selections cleared |
 | `?` | Toggle help |
 | `q` / `ctrl+c` | Quit (`ctrl+c` works everywhere except while commands run, where it asks to cancel) |
 
-List markers: `>` cursor row, `↑` outdated, `pin` pinned, `[x]` selected (`*` on narrow terminals). The status bar starts with `[ready]`, `[loading…]`, `[stale, refreshing…]`, `[checking selections…]`, `[running]` or `[error]`, and shows how many packages are selected. After a failed or running refresh, a banner above the list shows when the displayed inventory was loaded.
+List markers: `>` cursor row, `↑` outdated, `pin` pinned, `[x]` marked for upgrade (`*` on narrow terminals), `[-]` marked for removal (`-` on narrow terminals). The status bar starts with `[ready]`, `[loading…]`, `[stale, refreshing…]`, `[checking selections…]`, `[running]` or `[error]`, and shows how many packages are marked (`2 to upgrade · 1 to remove`). After a failed or running refresh, a banner above the list shows when the displayed inventory was loaded.
 
 ### Maintenance session
 
-Stage outdated packages with `space` or `a`, then press `u`. Brew Board reloads the inventory, drops selections that changed and says why, then shows the review. Nothing runs until you press `y`. Upgrades run one per package, in order, stopping at the first failure, with live output. Afterwards the inventory is reloaded and a receipt shows what changed; `s` saves it as `brewboard-receipt-<timestamp>-<id>.txt` (mode 0600) in your home directory. `c` offers `brew cleanup`, which gets its own review and `y`.
+Mark outdated packages for upgrade with `space` or `a`, and any installed, unpinned package for removal with `d`, then press `u`. A package is marked for one or the other, never both. The details view (`enter`) lists what a package depends on and what requires it. Brew Board reloads the inventory, drops marks that changed or break the dependency rules and says why, then shows the review: removals first, then upgrades. Nothing runs until you press `y`. Commands run one per package (`brew uninstall --formula|--cask <name>`, `brew upgrade --formula|--cask <name>`), in order, stopping at the first failure, with live output. Afterwards the inventory is reloaded and a receipt shows what changed; `s` saves it as `brewboard-receipt-<timestamp>-<id>.txt` (mode 0600) in your home directory. `c` offers `brew cleanup`; when, after the run, some formulae are installed only as dependencies and nothing installed needs them, the receipt lists them and `a` offers `brew autoremove` (Homebrew decides the final list). Each gets its own review and `y`.
+
+**Dependency rules.** A package can be removed only if every installed package that needs it is removed in the same plan; for formulae that means every keg whose full runtime dependency closure includes it, which is the check Homebrew itself makes before an uninstall. Otherwise the review drops it with "required by … — mark them for removal too, or keep …". A pinned formula cannot be removed until you `brew unpin` it. Dependents are removed before their dependencies. Brew Board never passes `--force` or `--ignore-dependencies`, and never runs `brew autoremove` unless you review it and press `y`.
 
 ## Plan and confirmation example
 
@@ -78,6 +82,8 @@ After selecting `ripgrep` (formula) and `iterm2` (cask) and pressing `u`:
 Review the plan
 
 Brew Board will run 2 commands, in order, stopping at the first failure:
+
+Upgrade (2)
 
  1. brew upgrade --formula ripgrep
     Upgrade formula ripgrep from 14.1.0 to 14.1.1. Homebrew may also upgrade dependencies.
@@ -91,7 +97,7 @@ Nothing runs until you press y.
 y run these 2 commands · esc back
 ```
 
-If a package changed since you selected it (for example it is already up to date), a "Changed since you selected:" list appears above the commands and that item is dropped.
+If a package changed since you marked it (for example it is already up to date), or a removal breaks the dependency rules, a "Dropped from the plan:" list appears above the commands and that item is dropped. Removals are listed under "Remove (N)" before the upgrades, with a red reminder that removal deletes the package's files.
 
 ## Receipt example
 
@@ -106,7 +112,7 @@ Homebrew: Homebrew 7.0.7
 2. brew upgrade --cask iterm2: failed, exit 1, 3.5.0 (unchanged)
 3. brew upgrade --formula wget: not run, 1.24.5 (unchanged)
 
-Summary: 1 upgraded, 1 failed, 0 cancelled, 1 not run, 0 uncertain
+Summary: 1 upgraded, 0 removed, 1 failed, 0 cancelled, 1 not run, 0 uncertain
 A command failed. Re-run the command in a terminal to see Homebrew's full message.
 ```
 
@@ -130,11 +136,11 @@ If the inventory cannot be reloaded after the run, the receipt adds `NOT VERIFIE
 
 - macOS only. Needs Homebrew 4 or newer with `--json=v2` support. Tested with Homebrew 7.0.x on Apple Silicon (prefix `/opt/homebrew`); Intel Macs are untested. Linuxbrew is untested and unsupported.
 - Brew Board looks for `brew` on `PATH`, then at `/opt/homebrew/bin/brew`, `/usr/local/bin/brew` and `/home/linuxbrew/.linuxbrew/bin/brew`.
-- To read the inventory it runs only `brew --version`, `brew info --json=v2 --installed` and `brew outdated --json=v2`. A confirmed session additionally runs exactly the reviewed commands. Every call sets `HOMEBREW_NO_AUTO_UPDATE=1`, so no hidden `brew update` happens.
+- To read the inventory it runs only `brew --version`, `brew info --json=v2 --installed` and `brew outdated --json=v2`. A confirmed session additionally runs exactly the reviewed commands. Every call sets `HOMEBREW_NO_AUTO_UPDATE=1`, `HOMEBREW_NO_AUTOREMOVE=1` and `HOMEBREW_NO_INSTALL_CLEANUP=1`, so no hidden `brew update` happens, `brew uninstall` and `brew cleanup` do not run an autoremove of their own, and `brew upgrade` does not clean up afterwards.
 - Self-updating casks are not reported as outdated (no `--greedy`).
-- Pinned packages cannot be selected. The list shows the latest installed version; the details view lists all installed versions.
-- Upgrades are per package; Homebrew may upgrade dependencies as part of one. Brew Board does not resolve dependencies itself.
-- No noninteractive mode, no `brew update`, no installs or uninstalls, and no automatic cleanup.
+- Pinned packages cannot be marked for upgrade or removal. The list shows the latest installed version; the details view lists all installed versions.
+- Upgrades are per package; Homebrew may upgrade dependencies as part of one. Brew Board checks dependencies only for removals, using the runtime dependency data `brew info` reports; its list of dependency-only formulae is a preview, and `brew autoremove` itself decides what it removes.
+- No noninteractive mode, no `brew update`, no installs, and no automatic cleanup or autoremove.
 - Release binaries are not code-signed or notarized.
 
 ## Design notes

@@ -43,6 +43,23 @@ type Package struct {
 	AutoUpdates bool
 	// InstalledOnRequest is false for formulae pulled in only as dependencies.
 	InstalledOnRequest bool
+	// Dependencies are the names of the package's direct dependencies only
+	// (never the transitive closure), sorted and de-duplicated, for display.
+	// For formulae they are the runtime dependencies declared directly by the
+	// current keg (the linked keg, else the newest), or the formula's
+	// declared dependencies when brew reports no keg information. For casks
+	// they are depends_on.formula and depends_on.cask merged into one sorted
+	// list; CaskDependencies says which of them are casks.
+	Dependencies []string
+	// RuntimeDependencies, for formulae, is the current keg's full runtime
+	// dependency closure (every runtime_dependencies full_name), sorted and
+	// de-duplicated. Homebrew's "required by" check and autoremove use it.
+	// It is nil for casks and for formulae without keg information.
+	RuntimeDependencies []string
+	// CaskDependencies, for casks, are the names in Dependencies that come
+	// from depends_on.cask; every other dependency is a formula. Formula
+	// dependencies are always formulae.
+	CaskDependencies []string
 }
 
 // Inventory is a snapshot of the local Homebrew installation.
