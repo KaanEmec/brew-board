@@ -133,6 +133,13 @@ func WithHomeDir(dir func() (string, error)) Option {
 	return func(m *model) { m.homeDir = dir }
 }
 
+// WithSpinner sets the animation shown next to the running item. The
+// default is spinner.MiniDot; the README screenshot tool replaces it because
+// its renderer's font has no Braille glyphs.
+func WithSpinner(s spinner.Spinner) Option {
+	return func(m *model) { m.spin.Spinner = s }
+}
+
 type model struct {
 	loader  brew.Loader
 	exec    Executor

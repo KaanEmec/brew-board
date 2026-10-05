@@ -11,6 +11,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/charmbracelet/bubbles/spinner"
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/x/ansi"
 
@@ -352,6 +353,17 @@ func TestRunEventsUpdateScreen(t *testing.T) {
 	m = step(m) // ItemFinished 0
 	if v := m.View(); !strings.Contains(v, "[completed 0]") || !strings.Contains(v, "[pending]") {
 		t.Errorf("item statuses not updated:\n%s", v)
+	}
+}
+
+func TestWithSpinnerSetsRunningGlyph(t *testing.T) {
+	loader := &fakeLoader{results: []fakeResult{{inv: fixtureInventory()}}}
+	m := sessionModel(t, loader, &fakeExecutor{}, 100, WithSpinner(spinner.Spinner{Frames: []string{"●"}, FPS: time.Second}))
+	m = review(t, stage(t, m, "git"))
+	m, _, _ = confirm(t, m)
+	next, _ := m.Update(runEventMsg{ev: run.ItemStarted{Index: 0}})
+	if v := next.(model).View(); !strings.Contains(v, "● [running]") {
+		t.Errorf("running item should use the configured spinner:\n%s", v)
 	}
 }
 

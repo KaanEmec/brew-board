@@ -4,6 +4,20 @@ All notable changes to this project are documented here. The format follows [Kee
 
 ## [Unreleased]
 
+### Added
+
+- Package removal: `d` marks an unpinned package for `brew uninstall --formula|--cask <name>`; removals are reviewed before upgrades and never use `--force` or `--ignore-dependencies`.
+- Dependency rules: a package is removable only if everything installed that needs it is removed in the same plan; otherwise the review drops it and says why. Pinned formulae cannot be removed, and dependents are removed before dependencies.
+- `brew autoremove` offer (`a` on the receipt) when formulae installed only as dependencies are needed by nothing installed, with its own review and confirmation.
+- Colour theme with light and dark variants that degrades to 256, 16 or no colours (honours `NO_COLOR`); state is always also shown as text.
+- `c` (continue) on the list opens the review; on the receipt `c` reviews `brew cleanup`.
+- Every `brew` call now also sets `HOMEBREW_NO_AUTOREMOVE=1`, `HOMEBREW_NO_INSTALL_CLEANUP=1`, `HOMEBREW_NO_ENV_HINTS=1`, `HOMEBREW_NO_COLOR=1` and `HOMEBREW_NO_EMOJI=1` (alongside `HOMEBREW_NO_AUTO_UPDATE=1`).
+- Homebrew tap: GoReleaser publishes `Formula/brewboard.rb` into this repository on each `v*` tag, including prereleases. Install with `brew tap kaanemec/brew-board https://github.com/KaanEmec/brew-board && brew install brewboard`.
+
+### Changed
+
+- README rewritten as a landing page with screenshots, install options, keyboard table and safety guarantees.
+
 ### v0.1: inspection
 
 - Homebrew adapter: finds `brew`, reads `brew info --json=v2 --installed` and `brew outdated --json=v2`, merges them into one inventory, with a 60 second timeout per command and classified errors.

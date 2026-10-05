@@ -3,3 +3,4 @@
 /dist/
 /brewboard
 coverage.out
+docs/screenshots/*.ansi

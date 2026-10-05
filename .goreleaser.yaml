@@ -21,6 +21,25 @@ archives:
 checksum:
   name_template: checksums.txt
 
+# Publishes Formula/brewboard.rb into this repository (it doubles as the tap).
+# GITHUB_TOKEN with contents: write (see release.yml) can push to it, so no
+# extra secret is needed. skip_upload is false so rc tags publish too.
+brews:
+  - name: brewboard
+    repository:
+      owner: KaanEmec
+      name: brew-board
+      branch: main
+    directory: Formula
+    commit_author:
+      name: Brew Board bot
+      email: brewboard-bot@users.noreply.github.com
+    homepage: https://github.com/KaanEmec/brew-board
+    description: Keyboard-first terminal interface for routine Homebrew maintenance
+    skip_upload: false
+    install: bin.install "brewboard"
+    test: system "#{bin}/brewboard", "--version"
+
 changelog:
   sort: asc
   filters:
