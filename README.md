@@ -19,10 +19,10 @@ Inspect, stage, review the exact commands, run them, keep a receipt.
 Requires macOS with Homebrew 4 or newer.
 
 ```sh
-brew tap kaanemec/brew-board https://github.com/KaanEmec/brew-board && brew install brewboard
+brew tap kaanemec/brew-board https://github.com/KaanEmec/brew-board && brew trust kaanemec/brew-board && brew install brewboard
 ```
 
-The tap lives in this repository, so Homebrew cannot find it on its own; the URL in the first command is what makes it work.
+The tap lives in this repository, so Homebrew cannot find it on its own; the URL in the first command is what makes it work. Homebrew 7 refuses formulae from third-party taps until you trust them, which is what `brew trust` does; it applies only to this tap.
 
 <details>
 <summary>Other ways to install</summary>
