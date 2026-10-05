@@ -1,0 +1,58 @@
+version: 2
+
+project_name: brewboard
+
+# macOS only: Linuxbrew is not supported.
+builds:
+  - id: brewboard
+    main: ./cmd/brewboard
+    binary: brewboard
+    env:
+      - CGO_ENABLED=0
+    goos: [darwin]
+    goarch: [arm64, amd64]
+    ldflags:
+      - -s -w -X main.version={{.Version}}
+
+archives:
+  - formats: [tar.gz]
+    name_template: "{{ .ProjectName }}_{{ .Version }}_{{ .Os }}_{{ .Arch }}"
+
+checksum:
+  name_template: checksums.txt
+
+# Publishes Formula/brewboard.rb into kaanemec/homebrew-tap. Run on the
+# maintainer's Mac after the v* tag is on GitHub:
+#   GITHUB_TOKEN=$(gh auth token) HOMEBREW_TAP_TOKEN=$(gh auth token) goreleaser release --clean
+# skip_upload is false so rc tags publish too.
+# Published as a formula (not a cask) on purpose: formula downloads are not
+# quarantined by macOS, so an unsigned binary runs without any Gatekeeper
+# workaround. GoReleaser marks `brews` deprecated; revisit once the binary is
+# signed and notarized.
+brews:
+  - name: brewboard
+    repository:
+      owner: kaanemec
+      name: homebrew-tap
+      token: "{{ .Env.HOMEBREW_TAP_TOKEN }}"
+    directory: Formula
+    commit_author:
+      name: goreleaserbot
+      email: bot@goreleaser.com
+    commit_msg_template: "brewboard {{ .Tag }}"
+    homepage: https://github.com/KaanEmec/brew-board
+    description: Keyboard-first terminal interface for routine Homebrew maintenance
+    skip_upload: false
+    install: bin.install "brewboard"
+    test: system "#{bin}/brewboard", "--version"
+
+release:
+  # Named here because the checkout's only git remote is the ProjectHub hub.
+  github:
+    owner: kaanemec
+    name: brew-board
+
+changelog:
+  sort: asc
+  filters:
+    exclude: ["^docs", "^test", "^ci", "^chore", "^style"]
