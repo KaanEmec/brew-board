@@ -51,6 +51,7 @@ release:
   github:
     owner: kaanemec
     name: brew-board
+  prerelease: auto
 
 changelog:
   sort: asc
